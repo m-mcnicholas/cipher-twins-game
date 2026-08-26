@@ -1,5 +1,4 @@
 import { Room } from "./network.js";
-import { renderGlyph } from "./glyphs.js";
 import { ICONS, ICON_GROUPS, renderIcon } from "./icons.js";
 import { LEVELS } from "./levels/manifest.js";
 
@@ -166,12 +165,11 @@ function renderHints() {
 }
 
 function renderWordTrack() {
-  const font = state.role === "A" ? "A" : "B";
-  const held = new Map(state.roleData.positions.map((pos, i) => [pos, state.roleData.glyphs[i]]));
+  const held = new Map(state.roleData.positions.map((pos, i) => [pos, state.roleData.letters[i]]));
   let html = "";
   for (let pos = 1; pos <= state.level.length; pos++) {
     if (held.has(pos)) {
-      html += `<div class="track-cell track-cell-mine"><div class="track-glyph">${renderGlyph(font, held.get(pos))}</div><span class="track-pos">${pos}</span></div>`;
+      html += `<div class="track-cell track-cell-mine"><div class="track-letter">${held.get(pos)}</div><span class="track-pos">${pos}</span></div>`;
     } else {
       html += `<div class="track-cell track-cell-partner" aria-hidden="true"><div class="track-blank">?</div><span class="track-pos">${pos}</span></div>`;
     }
@@ -221,7 +219,7 @@ function appendIcon(id) {
 function renderBoard() {
   const board = $("message-board");
   if (state.board.length === 0) {
-    board.innerHTML = `<p class="board-empty">No icons placed yet — start describing your glyphs.</p>`;
+    board.innerHTML = `<p class="board-empty">No icons placed yet — start describing your letters.</p>`;
   } else {
     board.innerHTML = state.board
       .map(
@@ -350,13 +348,13 @@ function showReveal({ agree, correct }) {
   } else if (agree && !correct) {
     kicker.textContent = "Close, but not quite";
     word.textContent = state.myGuessStr;
-    detail.textContent = "You two agreed on a word, but it isn't the one hidden here. Keep comparing glyphs and try again.";
+    detail.textContent = "You two agreed on a word, but it isn't the one hidden here. Keep comparing letters and try again.";
     nextBtn.hidden = true;
     retryBtn.hidden = false;
   } else {
     kicker.textContent = "You don't agree yet";
     word.textContent = `${state.myGuessStr} / ${state.partnerGuess}`;
-    detail.textContent = "Your guesses don't match each other. Compare where they differ and describe those glyphs more.";
+    detail.textContent = "Your guesses don't match each other. Compare where they differ and describe those letters more.";
     nextBtn.hidden = true;
     retryBtn.hidden = false;
   }

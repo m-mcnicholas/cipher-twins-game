@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A 2-player asymmetric co-op word puzzle. Each player holds half a hidden word in a private glyph font and must describe it with icons alone.">
+  <meta name="description" content="A 2-player asymmetric co-op word puzzle. Each player can see half a hidden word's letters, but can only communicate about them through a shared icon palette.">
   <title>Cipher Twins — Michael McNicholas</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23241f3d'/%3E%3Ccircle cx='24' cy='32' r='9' fill='none' stroke='%23f2c14e' stroke-width='3'/%3E%3Cpath d='M40 22 L52 32 L40 42' fill='none' stroke='%235fd0c0' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="./styles.css">
@@ -51,9 +51,9 @@
       <details class="how-to-play">
         <summary>How to play (30 seconds)</summary>
         <ol>
-          <li>You and your partner each see <strong>different letters</strong> of the same hidden word, rendered in your own private glyph font — you cannot read your partner's glyphs, and they cannot read yours.</li>
+          <li>You and your partner each see <strong>different letters</strong> of the same hidden word — you can read yours, but you can't just tell your partner what they are.</li>
           <li>Together you hold every letter, but neither of you holds enough to solve it alone.</li>
-          <li>Describe your glyphs to each other using only the <strong>shared icon palette</strong> — shape, position, count, category. No typing, no letters, no numbers.</li>
+          <li>Describe your letters to each other using only the <strong>shared icon palette</strong> — shape, position, count, category. No typing, no spelling, no numbers.</li>
           <li>Drop icons onto the shared message board. Your partner sees them appear in real time.</li>
           <li>When you think you know the word, spell your guess with the letter tiles. When you both agree <em>and</em> you're right, you advance.</li>
         </ol>
@@ -80,7 +80,7 @@
         <div class="attempts-indicator" id="attempts-indicator"></div>
       </div>
 
-      <section class="player-view" aria-label="Your glyphs">
+      <section class="player-view" aria-label="Your letters">
         <div class="player-hints" id="player-hints"></div>
         <div class="word-track" id="word-track" aria-label="Word layout"></div>
       </section>

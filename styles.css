@@ -206,17 +206,19 @@ main#app {
 
 .word-track { display: flex; flex-wrap: wrap; gap: 8px; }
 .track-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.track-glyph, .track-blank {
+.track-letter, .track-blank {
   width: 52px; height: 52px;
   border-radius: 10px;
   display: grid;
   place-items: center;
 }
-.track-cell-mine .track-glyph {
+.track-cell-mine .track-letter {
   background: var(--bg-panel-raised);
   border: 1.5px solid var(--a);
   color: var(--a);
-  padding: 8px;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 1.6rem;
 }
 .track-cell-partner .track-blank {
   border: 1.5px dashed var(--border);

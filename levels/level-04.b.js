@@ -1,6 +1,6 @@
 // Player B's private slice of level-04. Never imported by the Player A code path.
 export default {
-  "glyphs": [
+  "letters": [
     "P",
     "L"
   ],

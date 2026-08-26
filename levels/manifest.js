@@ -2,7 +2,7 @@
 // and no plaintext answer — only a SHA-256 hash of each answer, so a
 // completed guess can be verified client-side without ever shipping the
 // word itself in this shared file. See level-NN.a.js / level-NN.b.js for
-// the actual per-role glyph data, which are only ever fetched by the
+// the actual per-role letters, which are only ever fetched by the
 // matching role's code path.
 export const LEVELS = [
   {
