@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A 2-player asymmetric co-op word puzzle. Each player holds half a hidden word in a private glyph font and must describe it with icons alone.">
+  <title>Cipher Twins — Michael McNicholas</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23241f3d'/%3E%3Ccircle cx='24' cy='32' r='9' fill='none' stroke='%23f2c14e' stroke-width='3'/%3E%3Cpath d='M40 22 L52 32 L40 42' fill='none' stroke='%235fd0c0' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./game.js"></script>
+</head>
+<body>
+  <a class="back-link" href="../../index.html">← Back to the archive</a>
+
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Asymmetric co-op puzzle</p>
+      <h1>Cipher Twins</h1>
+      <p>Two players, one hidden word, no shared vocabulary. Describe shape and sound with icons — never letters.</p>
+    </div>
+  </header>
+
+  <main id="app">
+
+    <!-- LOBBY -->
+    <section class="screen" id="screen-lobby" data-active="true" aria-label="Room setup">
+      <div class="lobby-grid">
+        <article class="lobby-card">
+          <h2>Host a room</h2>
+          <p>Create a room and share the code with your partner.</p>
+          <button type="button" id="host-room-btn" class="primary-button">Create room</button>
+          <div class="room-code-display" id="host-code-display" hidden>
+            <p class="room-code-label">Room code</p>
+            <p class="room-code" id="host-code-value"></p>
+            <p class="lobby-status" id="host-status">Waiting for your partner to join…</p>
+          </div>
+        </article>
+
+        <article class="lobby-card">
+          <h2>Join a room</h2>
+          <p>Enter the code your partner shared with you.</p>
+          <form id="join-form">
+            <label for="join-code-input" class="visually-hidden">Room code</label>
+            <input id="join-code-input" name="code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ROOM CODE" required>
+            <button type="submit" class="primary-button">Join room</button>
+          </form>
+          <p class="lobby-status" id="join-status" role="status" aria-live="polite"></p>
+        </article>
+      </div>
+
+      <details class="how-to-play">
+        <summary>How to play (30 seconds)</summary>
+        <ol>
+          <li>You and your partner each see <strong>different letters</strong> of the same hidden word, rendered in your own private glyph font — you cannot read your partner's glyphs, and they cannot read yours.</li>
+          <li>Together you hold every letter, but neither of you holds enough to solve it alone.</li>
+          <li>Describe your glyphs to each other using only the <strong>shared icon palette</strong> — shape, position, count, category. No typing, no letters, no numbers.</li>
+          <li>Drop icons onto the shared message board. Your partner sees them appear in real time.</li>
+          <li>When you think you know the word, spell your guess with the letter tiles. When you both agree <em>and</em> you're right, you advance.</li>
+        </ol>
+      </details>
+    </section>
+
+    <!-- CONNECTING -->
+    <section class="screen" id="screen-connecting" aria-label="Connecting">
+      <div class="connecting-box">
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="connecting-message">Connecting…</p>
+      </div>
+    </section>
+
+    <!-- GAME -->
+    <section class="screen" id="screen-game" aria-label="Puzzle">
+      <div class="game-topbar">
+        <div class="level-indicator">
+          <span class="level-label">Level</span>
+          <span id="level-number">1</span>
+          <span class="level-of">/ 10</span>
+        </div>
+        <div class="role-indicator" id="role-indicator"></div>
+        <div class="attempts-indicator" id="attempts-indicator"></div>
+      </div>
+
+      <section class="player-view" aria-label="Your glyphs">
+        <div class="player-hints" id="player-hints"></div>
+        <div class="word-track" id="word-track" aria-label="Word layout"></div>
+      </section>
+
+      <section class="board-section" aria-label="Shared message board">
+        <div class="board-header">
+          <h2>Shared board</h2>
+          <div class="board-actions">
+            <span class="board-slots" id="board-slots"></span>
+            <button type="button" id="board-undo" class="quiet-button">Undo</button>
+            <button type="button" id="board-clear" class="quiet-button">Clear</button>
+          </div>
+        </div>
+        <div class="message-board" id="message-board" role="list" aria-label="Placed icons"></div>
+      </section>
+
+      <section class="palette-section" aria-label="Icon palette" id="palette-section"></section>
+
+      <section class="answer-section" aria-label="Submit your answer">
+        <h2>Your guess</h2>
+        <div class="answer-bar" id="answer-bar"></div>
+        <div class="letter-picker" id="letter-picker"></div>
+        <div class="answer-actions">
+          <button type="button" id="answer-backspace" class="quiet-button">Backspace</button>
+          <button type="button" id="answer-clear" class="quiet-button">Clear</button>
+          <button type="button" id="answer-submit" class="primary-button" disabled>Submit guess</button>
+        </div>
+        <p class="answer-status" id="answer-status" role="status" aria-live="polite"></p>
+      </section>
+    </section>
+
+    <!-- REVEAL -->
+    <section class="screen" id="screen-reveal" aria-label="Result">
+      <div class="reveal-box">
+        <p class="reveal-kicker" id="reveal-kicker"></p>
+        <h2 class="reveal-word" id="reveal-word"></h2>
+        <p class="reveal-detail" id="reveal-detail"></p>
+        <div class="reveal-actions">
+          <button type="button" id="reveal-next" class="primary-button" hidden>Next level</button>
+          <button type="button" id="reveal-retry" class="quiet-button" hidden>Try again</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPLETE -->
+    <section class="screen" id="screen-complete" aria-label="All levels complete">
+      <div class="reveal-box">
+        <p class="reveal-kicker">All ten solved</p>
+        <h2 class="reveal-word">You two think alike.</h2>
+        <p class="reveal-detail">Ten hidden words, zero shared vocabulary going in — you built one together, icon by icon.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <p class="connection-banner" id="connection-banner" role="status" aria-live="polite" hidden></p>
+</body>
+</html>
