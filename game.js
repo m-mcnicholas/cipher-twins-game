@@ -1,6 +1,6 @@
 import { Room } from "./network.js";
 import { ICONS, ICON_GROUPS, renderIcon } from "./icons.js";
-import { LEVELS } from "./levels/manifest.js";
+import { WORDS, LEVEL_SCHEDULE } from "./words/manifest.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -30,8 +30,10 @@ const room = new Room();
 const state = {
   role: null, // "A" | "B"
   levelIndex: 0,
-  level: null, // current manifest entry
-  roleData: null, // this player's private slice for the current level
+  schedule: null, // current LEVEL_SCHEDULE entry (length, palette, maxBoardIcons)
+  wordId: null,
+  word: null, // current WORDS entry (id, length, category, answerHash) — public, hash-only
+  roleData: null, // this player's private slice for the current word
   board: [], // [{id, by}]
   myGuess: [],
   myGuessStr: null,
@@ -39,6 +41,7 @@ const state = {
   partnerGuess: null,
   partnerSubmitted: false,
   attempts: Object.create(null),
+  usedWordIds: new Set(), // host-only: words already drawn this session
 };
 
 // ---- lobby -------------------------------------------------------
@@ -76,7 +79,12 @@ $("join-form").addEventListener("submit", async (event) => {
 room.addEventListener("connected", ({ detail }) => {
   state.role = detail.role;
   $("role-indicator").textContent = `You are Player ${detail.role} · Room ${detail.code}`;
-  loadLevel(0);
+  if (state.role === "A") {
+    hostAdvanceTo(0);
+  } else {
+    $("connecting-message").textContent = "Connected! Loading the first puzzle…";
+    showScreen("connecting");
+  }
 });
 
 room.addEventListener("message", ({ detail }) => handleMessage(detail));
@@ -108,36 +116,62 @@ function handleMessage(message) {
       checkResolution();
       break;
     case "level:advance":
-      loadLevel(message.payload.index);
+      applyLevel(message.payload.index, message.payload.wordId);
       break;
     case "level:retry":
       if (message.payload.levelIndex !== state.levelIndex) return;
       resetGuessesKeepBoard();
+      break;
+    case "request:advance":
+      // Only the host draws words, so it alone acts on an advance request —
+      // this keeps word selection single-sourced even if both players click
+      // "Next level" at once.
+      if (state.role === "A") hostAdvanceTo(message.payload.index);
       break;
   }
 }
 
 // ---- level loading -------------------------------------------------------
 
-async function loadLevel(index) {
-  if (index >= LEVELS.length) {
+// Host-only: picks the next word and is the single source of truth for
+// which word a level uses, since word choice is now random. Applies it
+// locally and broadcasts it so the joiner loads the identical word.
+function hostAdvanceTo(index) {
+  if (index >= LEVEL_SCHEDULE.length) {
+    room.send("level:advance", { index, wordId: null });
+    showScreen("complete");
+    return;
+  }
+  const targetLength = LEVEL_SCHEDULE[index].length;
+  let candidates = WORDS.filter((w) => w.length === targetLength && !state.usedWordIds.has(w.id));
+  if (candidates.length === 0) candidates = WORDS.filter((w) => w.length === targetLength); // pool exhausted, allow repeats
+  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  state.usedWordIds.add(chosen.id);
+  room.send("level:advance", { index, wordId: chosen.id });
+  applyLevel(index, chosen.id);
+}
+
+async function applyLevel(index, wordId) {
+  if (index >= LEVEL_SCHEDULE.length) {
     showScreen("complete");
     return;
   }
   state.levelIndex = index;
-  state.level = LEVELS[index];
+  state.schedule = LEVEL_SCHEDULE[index];
+  state.wordId = wordId;
+  state.word = WORDS.find((w) => w.id === wordId);
   state.board = [];
-  state.myGuess = Array(state.level.length).fill(null);
+  state.myGuess = Array(state.word.length).fill(null);
   state.myGuessStr = null;
   state.submitted = false;
   state.partnerGuess = null;
   state.partnerSubmitted = false;
 
   const roleFile = state.role === "A" ? "a" : "b";
-  const mod = await import(`./levels/${state.level.id}.${roleFile}.js`);
+  const mod = await import(`./words/${wordId}.${roleFile}.js`);
   state.roleData = mod.default;
 
-  state.attempts[state.level.id] ??= 0;
+  state.attempts[wordId] ??= 0;
 
   $("level-number").textContent = String(index + 1);
   renderHints();
@@ -155,8 +189,8 @@ function renderHints() {
   const labels = {
     category: "Category",
     length: "Length",
-    rhymesWith: "Rhymes with",
     syllables: "Syllables",
+    firstSound: "First sound",
   };
   const chips = Object.entries(state.roleData.hints)
     .map(([key, value]) => `<span class="hint-chip"><strong>${labels[key] ?? key}:</strong> ${value}</span>`)
@@ -167,7 +201,7 @@ function renderHints() {
 function renderWordTrack() {
   const held = new Map(state.roleData.positions.map((pos, i) => [pos, state.roleData.letters[i]]));
   let html = "";
-  for (let pos = 1; pos <= state.level.length; pos++) {
+  for (let pos = 1; pos <= state.word.length; pos++) {
     if (held.has(pos)) {
       html += `<div class="track-cell track-cell-mine"><div class="track-letter">${held.get(pos)}</div><span class="track-pos">${pos}</span></div>`;
     } else {
@@ -178,7 +212,7 @@ function renderWordTrack() {
 }
 
 function renderPalette() {
-  const allowed = new Set(state.level.iconPalette);
+  const allowed = new Set(state.schedule.palette);
   const groups = ICON_GROUPS.map((group) => {
     const ids = Object.keys(ICONS).filter((id) => ICONS[id].group === group && allowed.has(id));
     if (ids.length === 0) return "";
@@ -200,7 +234,7 @@ function renderPalette() {
 }
 
 function updatePaletteDisabledState() {
-  const max = state.level.maxBoardIcons;
+  const max = state.schedule.maxBoardIcons;
   const full = max != null && state.board.length >= max;
   $("palette-section").querySelectorAll(".palette-icon").forEach((btn) => {
     btn.disabled = full;
@@ -209,7 +243,7 @@ function updatePaletteDisabledState() {
 }
 
 function appendIcon(id) {
-  const max = state.level.maxBoardIcons;
+  const max = state.schedule.maxBoardIcons;
   if (max != null && state.board.length >= max) return;
   state.board.push({ id, by: state.role });
   renderBoard();
@@ -305,7 +339,7 @@ $("answer-clear").addEventListener("click", () => {
 });
 
 function renderAttempts() {
-  const n = state.attempts[state.level.id];
+  const n = state.attempts[state.wordId];
   $("attempts-indicator").textContent = n > 0 ? `Attempt ${n + 1}` : "";
 }
 
@@ -313,7 +347,7 @@ $("answer-submit").addEventListener("click", () => {
   if (state.myGuess.some((l) => l === null) || state.submitted) return;
   state.myGuessStr = state.myGuess.join("");
   state.submitted = true;
-  state.attempts[state.level.id] += 1;
+  state.attempts[state.wordId] += 1;
   updateAnswerControls();
   room.send("guess:submit", { guess: state.myGuessStr, levelIndex: state.levelIndex });
   checkResolution();
@@ -325,7 +359,7 @@ async function checkResolution() {
   let correct = false;
   if (agree) {
     const hash = await sha256Hex(state.myGuessStr);
-    correct = hash === state.level.answerHash;
+    correct = hash === state.word.answerHash;
   }
   showReveal({ agree, correct });
 }
@@ -342,8 +376,9 @@ function showReveal({ agree, correct }) {
   if (agree && correct) {
     kicker.textContent = "Solved";
     word.textContent = state.myGuessStr;
-    detail.textContent = `You both agreed — and you were right. That took ${state.attempts[state.level.id]} attempt${state.attempts[state.level.id] === 1 ? "" : "s"}.`;
+    detail.textContent = `You both agreed — and you were right. That took ${state.attempts[state.wordId]} attempt${state.attempts[state.wordId] === 1 ? "" : "s"}.`;
     nextBtn.hidden = false;
+    nextBtn.disabled = false;
     retryBtn.hidden = true;
   } else if (agree && !correct) {
     kicker.textContent = "Close, but not quite";
@@ -363,8 +398,12 @@ function showReveal({ agree, correct }) {
 
 $("reveal-next").addEventListener("click", () => {
   const next = state.levelIndex + 1;
-  room.send("level:advance", { index: next });
-  loadLevel(next);
+  $("reveal-next").disabled = true;
+  if (state.role === "A") {
+    hostAdvanceTo(next);
+  } else {
+    room.send("request:advance", { index: next });
+  }
 });
 
 $("reveal-retry").addEventListener("click", () => {
