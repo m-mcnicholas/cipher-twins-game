@@ -111,6 +111,7 @@ main#app {
 }
 .quiet-button:hover:not(:disabled) { color: var(--text); border-color: var(--text-dim); }
 .quiet-button:disabled { opacity: 0.4; cursor: default; }
+.quiet-button.confirming { color: var(--danger); border-color: var(--danger); }
 
 /* lobby */
 .lobby-grid {
@@ -276,9 +277,28 @@ main#app {
   display: grid;
   place-items: center;
   padding: 7px;
+  font: inherit;
+  cursor: pointer;
+  transition: filter 0.1s, transform 0.1s;
 }
+.board-icon:hover, .board-icon:focus-visible { filter: brightness(1.2); }
+.board-icon:active { transform: scale(0.9); }
 .board-icon-A { background: var(--a-dim); border: 1px solid var(--a); color: var(--a); }
 .board-icon-B { background: var(--b-dim); border: 1px solid var(--b); color: var(--b); }
+
+/* meta:next placements render as a divider rather than an icon tile, so the
+   board visually breaks into per-letter groups. */
+.board-divider {
+  align-self: stretch;
+  width: 6px;
+  margin: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--border);
+  cursor: pointer;
+  padding: 0;
+}
+.board-divider:hover, .board-divider:focus-visible { background: var(--text-dim); }
 
 /* palette */
 .palette-section { margin-bottom: 24px; }

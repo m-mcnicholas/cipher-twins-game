@@ -1,7 +1,11 @@
-const MESSAGE_TYPES = new Set(["board:op", "board:state", "guess:submit", "level:advance", "level:retry", "request:advance", "request:retry"]);
+const MESSAGE_TYPES = new Set([
+  "board:op", "board:state", "guess:submit", "guess:retract",
+  "level:advance", "level:retry", "request:advance", "request:retry",
+]);
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isIndex = (value, levelCount) => Number.isInteger(value) && value >= 0 && value <= levelCount;
 const hasLevel = (payload, context) => payload.levelIndex === context.levelIndex && payload.wordId === context.wordId;
+const isPuzzleRole = (value) => value === "a" || value === "b";
 
 export function validateIncomingMessage(message, context) {
   if (!isRecord(message) || !MESSAGE_TYPES.has(message.type) || !isRecord(message.payload)) return null;
@@ -13,25 +17,37 @@ export function validateIncomingMessage(message, context) {
 
   if (type === "level:advance") {
     if (!isIndex(payload.index, context.levelCount)) return null;
-    if (payload.index === context.levelCount) return payload.wordId === null ? { type, payload: { index: payload.index, wordId: null } } : null;
+    const puzzleRoleForA = isPuzzleRole(payload.puzzleRoleForA) ? payload.puzzleRoleForA : null;
+    if (payload.index === context.levelCount) return payload.wordId === null ? { type, payload: { index: payload.index, wordId: null, puzzleRoleForA } } : null;
     if (typeof payload.wordId !== "string" || !context.wordIds.has(payload.wordId)) return null;
-    return { type, payload: { index: payload.index, wordId: payload.wordId } };
+    return { type, payload: { index: payload.index, wordId: payload.wordId, puzzleRoleForA } };
   }
   if (type === "request:advance") return isIndex(payload.index, context.levelCount) ? { type, payload: { index: payload.index } } : null;
   if (type === "guess:submit") {
     if (!hasLevel(payload, context) || typeof payload.guess !== "string" || !/^[A-Z]+$/.test(payload.guess) || payload.guess.length !== context.wordLength) return null;
     return { type, payload: { levelIndex: payload.levelIndex, wordId: payload.wordId, guess: payload.guess } };
   }
-  if (type === "level:retry" || type === "request:retry") {
+  if (type === "level:retry" || type === "request:retry" || type === "guess:retract") {
     return hasLevel(payload, context) ? { type, payload: { levelIndex: payload.levelIndex, wordId: payload.wordId } } : null;
   }
   if (type === "board:op") {
     if (!hasLevel(payload, context) || !isRecord(payload.operation)) return null;
     const operation = payload.operation;
     if (typeof operation.id !== "string" || !/^B-[A-Za-z0-9_-]{1,80}$/.test(operation.id)) return null;
-    if (!["add", "undo", "clear"].includes(operation.kind)) return null;
+    if (!["add", "remove", "undo", "clear"].includes(operation.kind)) return null;
     if (operation.kind === "add" && (typeof operation.iconId !== "string" || !context.allowedIconIds.has(operation.iconId))) return null;
-    return { type, payload: { levelIndex: payload.levelIndex, wordId: payload.wordId, operation: { id: operation.id, kind: operation.kind, ...(operation.kind === "add" ? { iconId: operation.iconId } : {}) } } };
+    if (operation.kind === "remove" && (typeof operation.targetId !== "string" || !/^[A-Z]-[A-Za-z0-9_-]{1,80}$/.test(operation.targetId))) return null;
+    return {
+      type,
+      payload: {
+        levelIndex: payload.levelIndex, wordId: payload.wordId,
+        operation: {
+          id: operation.id, kind: operation.kind,
+          ...(operation.kind === "add" ? { iconId: operation.iconId } : {}),
+          ...(operation.kind === "remove" ? { targetId: operation.targetId } : {}),
+        },
+      },
+    };
   }
   if (type === "board:state") {
     if (!hasLevel(payload, context) || !Number.isSafeInteger(payload.revision) || payload.revision < 0 || !Array.isArray(payload.icons) || payload.icons.length > context.maxBoardIcons) return null;
@@ -48,7 +64,22 @@ export function validateIncomingMessage(message, context) {
 
 export function applyBoardOperation(board, operation, by, maxBoardIcons) {
   if (operation.kind === "add") return board.length >= maxBoardIcons ? board : [...board, { id: operation.id, iconId: operation.iconId, by }];
-  if (operation.kind === "undo") return board.slice(0, -1);
+  // "remove" deletes one specific entry regardless of who placed it — the
+  // targeted per-icon removal a board tile's own click triggers.
+  if (operation.kind === "remove") {
+    const index = board.findIndex((entry) => entry.id === operation.targetId);
+    return index === -1 ? board : [...board.slice(0, index), ...board.slice(index + 1)];
+  }
+  // "undo" only ever removes the *requesting player's own* most recent
+  // entry — a shared "pop whatever was placed last" could erase a
+  // partner's placement instead of your own.
+  if (operation.kind === "undo") {
+    let index = -1;
+    for (let i = board.length - 1; i >= 0; i -= 1) {
+      if (board[i].by === by) { index = i; break; }
+    }
+    return index === -1 ? board : [...board.slice(0, index), ...board.slice(index + 1)];
+  }
   if (operation.kind === "clear") return [];
   return board;
 }

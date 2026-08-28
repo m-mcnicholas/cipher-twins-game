@@ -61,6 +61,7 @@ export const ICONS = {
   "cat:feeling": { label: "Feeling", group: "Category", render: () => svg('<path d="M12 20 C5 15 3 11 5 7.5 C7 4.5 11 5 12 8 C13 5 17 4.5 19 7.5 C21 11 19 15 12 20 Z" />') },
 
   // meta
+  "meta:next": { label: "Next letter", group: "Meta", render: () => svg('<line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="3 3" /><path d="M8 7 L12 3 L16 7" /><path d="M8 17 L12 21 L16 17" />') },
   "meta:confirm": { label: "Confirm", group: "Meta", render: () => svg('<path d="M4 12 L10 18 L20 6" />') },
   "meta:reject": { label: "Reject", group: "Meta", render: () => svg('<line x1="5" y1="5" x2="19" y2="19" /><line x1="19" y1="5" x2="5" y2="19" />') },
   "meta:question": { label: "Question", group: "Meta", render: () => svg('<path d="M8 8 a4 4 0 1 1 6 3.5 c-1.5 1-2 2-2 3.5" /><circle cx="12" cy="19" r="0.8" fill="currentColor" />') },

@@ -1966,6 +1966,7 @@ export const LEVEL_SCHEDULE = [
       "cat:action",
       "cat:food",
       "cat:feeling",
+      "meta:next",
       "meta:confirm",
       "meta:reject",
       "meta:question"
@@ -1996,6 +1997,7 @@ export const LEVEL_SCHEDULE = [
       "cat:action",
       "cat:food",
       "cat:feeling",
+      "meta:next",
       "meta:confirm",
       "meta:reject",
       "meta:question"
@@ -2027,6 +2029,7 @@ export const LEVEL_SCHEDULE = [
       "cat:action",
       "cat:food",
       "cat:feeling",
+      "meta:next",
       "meta:confirm",
       "meta:reject",
       "meta:question"
@@ -2059,6 +2062,7 @@ export const LEVEL_SCHEDULE = [
       "cat:action",
       "cat:food",
       "cat:feeling",
+      "meta:next",
       "meta:confirm",
       "meta:reject",
       "meta:question"
@@ -2090,6 +2094,7 @@ export const LEVEL_SCHEDULE = [
       "cat:nature",
       "cat:action",
       "cat:food",
+      "meta:next",
       "meta:confirm",
       "meta:reject",
       "meta:question"
@@ -2120,6 +2125,7 @@ export const LEVEL_SCHEDULE = [
       "cat:nature",
       "cat:action",
       "cat:food",
+      "meta:next",
       "meta:confirm",
       "meta:reject",
       "meta:question"
@@ -2150,6 +2156,7 @@ export const LEVEL_SCHEDULE = [
       "cat:nature",
       "cat:action",
       "cat:food",
+      "meta:next",
       "meta:confirm",
       "meta:reject"
     ]
@@ -2178,6 +2185,7 @@ export const LEVEL_SCHEDULE = [
       "cat:nature",
       "cat:action",
       "cat:food",
+      "meta:next",
       "meta:confirm",
       "meta:reject"
     ]
@@ -2204,6 +2212,7 @@ export const LEVEL_SCHEDULE = [
       "cat:nature",
       "cat:action",
       "cat:food",
+      "meta:next",
       "meta:confirm",
       "meta:reject"
     ]
@@ -2229,6 +2238,7 @@ export const LEVEL_SCHEDULE = [
       "cat:nature",
       "cat:action",
       "cat:food",
+      "meta:next",
       "meta:confirm",
       "meta:reject"
     ]
