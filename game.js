@@ -28,13 +28,14 @@ async function sha256Hex(text) {
 
 const room = new Room();
 const state = {
-  role: null, // "A" | "B"
+  role: null, // "A" | "B" — network role (host vs joiner)
+  puzzleRoleForA: null, // "a" | "b" — which puzzle-side role network-role A got this session; the host randomizes this once so hosting doesn't always hand out the easier-to-encode hint set
   levelIndex: 0,
   schedule: null, // current LEVEL_SCHEDULE entry (length, palette, maxBoardIcons)
   wordId: null,
   word: null, // current WORDS entry (id, length, category, answerHash) — public, hash-only
   roleData: null, // this player's private slice for the current word
-  board: [], // [{id, by}]
+  board: [], // [{opId, iconId, by}]
   myGuess: [],
   myGuessStr: null,
   submitted: false,
@@ -43,6 +44,16 @@ const state = {
   attempts: Object.create(null),
   usedWordIds: new Set(), // host-only: words already drawn this session
 };
+
+// Network role (A = host, B = joiner) is fixed at connection time, but which
+// *puzzle* role (odd positions + category/length hints, vs. even positions +
+// syllables/firstSound hints) each network role plays is randomized once per
+// session by the host and shared via `puzzleRoleForA` — see the "connected"
+// and "level:advance" handling below.
+function myPuzzleRole() {
+  const aRole = state.puzzleRoleForA ?? "a";
+  return state.role === "A" ? aRole : aRole === "a" ? "b" : "a";
+}
 
 // ---- lobby -------------------------------------------------------
 
@@ -80,6 +91,7 @@ room.addEventListener("connected", ({ detail }) => {
   state.role = detail.role;
   $("role-indicator").textContent = `You are Player ${detail.role} · Room ${detail.code}`;
   if (state.role === "A") {
+    state.puzzleRoleForA = Math.random() < 0.5 ? "a" : "b";
     hostAdvanceTo(0);
   } else {
     $("connecting-message").textContent = "Connected! Loading the first puzzle…";
@@ -116,11 +128,20 @@ function handleMessage(message) {
       checkResolution();
       break;
     case "level:advance":
+      if (message.payload.puzzleRoleForA === "a" || message.payload.puzzleRoleForA === "b") {
+        state.puzzleRoleForA = message.payload.puzzleRoleForA;
+      }
       applyLevel(message.payload.index, message.payload.wordId);
       break;
     case "level:retry":
       if (message.payload.levelIndex !== state.levelIndex) return;
       resetGuessesKeepBoard();
+      break;
+    case "guess:retract":
+      if (message.payload.levelIndex !== state.levelIndex) return;
+      state.partnerGuess = null;
+      state.partnerSubmitted = false;
+      updateAnswerControls();
       break;
     case "request:advance":
       // Only the host draws words, so it alone acts on an advance request —
@@ -138,7 +159,7 @@ function handleMessage(message) {
 // locally and broadcasts it so the joiner loads the identical word.
 function hostAdvanceTo(index) {
   if (index >= LEVEL_SCHEDULE.length) {
-    room.send("level:advance", { index, wordId: null });
+    room.send("level:advance", { index, wordId: null, puzzleRoleForA: state.puzzleRoleForA });
     showScreen("complete");
     return;
   }
@@ -147,7 +168,7 @@ function hostAdvanceTo(index) {
   if (candidates.length === 0) candidates = WORDS.filter((w) => w.length === targetLength); // pool exhausted, allow repeats
   const chosen = candidates[Math.floor(Math.random() * candidates.length)];
   state.usedWordIds.add(chosen.id);
-  room.send("level:advance", { index, wordId: chosen.id });
+  room.send("level:advance", { index, wordId: chosen.id, puzzleRoleForA: state.puzzleRoleForA });
   applyLevel(index, chosen.id);
 }
 
@@ -161,13 +182,14 @@ async function applyLevel(index, wordId) {
   state.wordId = wordId;
   state.word = WORDS.find((w) => w.id === wordId);
   state.board = [];
+  resetClearConfirm();
   state.myGuess = Array(state.word.length).fill(null);
   state.myGuessStr = null;
   state.submitted = false;
   state.partnerGuess = null;
   state.partnerSubmitted = false;
 
-  const roleFile = state.role === "A" ? "a" : "b";
+  const roleFile = myPuzzleRole();
   const mod = await import(`./words/${wordId}.${roleFile}.js`);
   state.roleData = mod.default;
 
@@ -242,12 +264,30 @@ function updatePaletteDisabledState() {
   $("board-slots").textContent = max != null ? `${state.board.length} / ${max} icons` : `${state.board.length} icons`;
 }
 
-function appendIcon(id) {
+function operationId() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function appendIcon(iconId) {
   const max = state.schedule.maxBoardIcons;
   if (max != null && state.board.length >= max) return;
-  state.board.push({ id, by: state.role });
+  state.board.push({ opId: operationId(), iconId, by: state.role });
   renderBoard();
   room.send("board:update", { icons: state.board });
+}
+
+// Removes one specific board entry (by its placement id) rather than always
+// popping whatever was placed last — so removing an icon never depends on
+// who happened to place it or when.
+function removeBoardEntryAt(index) {
+  if (index === -1) return;
+  state.board.splice(index, 1);
+  renderBoard();
+  room.send("board:update", { icons: state.board });
+}
+
+function removeBoardIcon(opId) {
+  removeBoardEntryAt(state.board.findIndex((entry) => entry.opId === opId));
 }
 
 function renderBoard() {
@@ -255,26 +295,52 @@ function renderBoard() {
   if (state.board.length === 0) {
     board.innerHTML = `<p class="board-empty">No icons placed yet — start describing your letters.</p>`;
   } else {
+    // A "meta:next" entry renders as a divider rather than an icon tile,
+    // visually breaking the board into per-letter groups.
     board.innerHTML = state.board
-      .map(
-        (entry) => `<div class="board-icon board-icon-${entry.by}" role="listitem" title="${ICONS[entry.id].label}">
-          <span class="icon-render">${renderIcon(entry.id)}</span>
-        </div>`
+      .map((entry) =>
+        entry.iconId === "meta:next"
+          ? `<button type="button" class="board-divider" data-op-id="${entry.opId}" title="Next letter — click to remove" aria-label="Next-letter divider, click to remove"></button>`
+          : `<button type="button" class="board-icon board-icon-${entry.by}" data-op-id="${entry.opId}" title="${ICONS[entry.iconId].label} — click to remove">
+              <span class="icon-render">${renderIcon(entry.iconId)}</span>
+            </button>`
       )
       .join("");
+    board.querySelectorAll("[data-op-id]").forEach((el) => {
+      el.addEventListener("click", () => removeBoardIcon(el.dataset.opId));
+    });
   }
   updatePaletteDisabledState();
 }
 
+// "Undo" only ever removes *your own* most recent icon, never a partner's —
+// a shared "pop the last placed icon" button meant either player could
+// accidentally erase what the other just placed.
 $("board-undo").addEventListener("click", () => {
-  if (state.board.length === 0) return;
-  state.board.pop();
-  renderBoard();
-  room.send("board:update", { icons: state.board });
+  removeBoardEntryAt(state.board.findLastIndex((entry) => entry.by === state.role));
 });
+
+const CLEAR_CONFIRM_THRESHOLD = 5;
+let clearConfirmTimer = null;
+
+function resetClearConfirm() {
+  clearTimeout(clearConfirmTimer);
+  clearConfirmTimer = null;
+  const button = $("board-clear");
+  button.classList.remove("confirming");
+  button.textContent = "Clear";
+}
 
 $("board-clear").addEventListener("click", () => {
   if (state.board.length === 0) return;
+  const button = $("board-clear");
+  if (state.board.length > CLEAR_CONFIRM_THRESHOLD && !button.classList.contains("confirming")) {
+    button.classList.add("confirming");
+    button.textContent = "Clear all?";
+    clearConfirmTimer = setTimeout(resetClearConfirm, 3000);
+    return;
+  }
+  resetClearConfirm();
   state.board = [];
   renderBoard();
   room.send("board:update", { icons: state.board });
@@ -306,10 +372,11 @@ function updateAnswerControls() {
   $("answer-backspace").disabled = locked;
   $("answer-clear").disabled = locked;
   $("letter-picker").querySelectorAll(".letter-tile").forEach((btn) => (btn.disabled = locked));
+  $("answer-unsubmit").hidden = !(locked && !state.partnerSubmitted);
   $("answer-status").textContent = locked
     ? state.partnerSubmitted
       ? "Comparing guesses…"
-      : "Waiting for your partner to submit…"
+      : "Waiting for your partner to submit… (you can still unsubmit)"
     : "";
 }
 
@@ -351,6 +418,19 @@ $("answer-submit").addEventListener("click", () => {
   updateAnswerControls();
   room.send("guess:submit", { guess: state.myGuessStr, levelIndex: state.levelIndex });
   checkResolution();
+});
+
+// Only enabled before the partner has submitted — nothing about a guess has
+// been revealed yet at that point, so there's no reason a fat-fingered
+// submit should have to wait out a whole reveal-and-retry cycle to fix.
+$("answer-unsubmit").addEventListener("click", () => {
+  if (!state.submitted || state.partnerSubmitted) return;
+  state.submitted = false;
+  state.myGuessStr = null;
+  state.attempts[state.wordId] -= 1;
+  room.send("guess:retract", { levelIndex: state.levelIndex });
+  updateAnswerControls();
+  renderAttempts();
 });
 
 async function checkResolution() {
