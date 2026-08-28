@@ -16,14 +16,14 @@
     <div>
       <p class="eyebrow">Asymmetric co-op puzzle</p>
       <h1>Cipher Twins</h1>
-      <p>Each of you have half the word. You need to figure out how to give it to the other person</p>
+      <p>Each of you has half the word. You need to figure out how to communicate your half to the other person.</p>
     </div>
   </header>
 
   <main id="app">
 
     <!-- LOBBY -->
-    <section class="screen" id="screen-lobby" data-active="true" aria-label="Room setup">
+    <section class="screen" id="screen-lobby" data-active="true" aria-label="Room setup" tabindex="-1">
       <div class="lobby-grid">
         <article class="lobby-card">
           <h2>Host a room</h2>
@@ -41,7 +41,7 @@
           <p>Enter the code your partner shared with you.</p>
           <form id="join-form">
             <label for="join-code-input" class="visually-hidden">Room code</label>
-            <input id="join-code-input" name="code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ROOM CODE" required>
+            <input id="join-code-input" name="code" minlength="7" maxlength="7" pattern="[A-HJ-NP-Z2-9]{7}" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ROOM CODE" required>
             <button type="submit" class="primary-button">Join room</button>
           </form>
           <p class="lobby-status" id="join-status" role="status" aria-live="polite"></p>
@@ -58,10 +58,11 @@
           <li>When you think you know the word, spell your guess with the letter tiles. When you both agree <em>and</em> you're right, you advance.</li>
         </ol>
       </details>
+      <p class="network-note">Rooms use PeerJS for connection setup and may use Google STUN or Metered's Open Relay TURN service. Those third parties can receive connection metadata; puzzle traffic is peer-to-peer when a direct connection succeeds.</p>
     </section>
 
     <!-- CONNECTING -->
-    <section class="screen" id="screen-connecting" aria-label="Connecting">
+    <section class="screen" id="screen-connecting" aria-label="Connecting" tabindex="-1">
       <div class="connecting-box">
         <div class="spinner" aria-hidden="true"></div>
         <p id="connecting-message">Connecting…</p>
@@ -69,7 +70,7 @@
     </section>
 
     <!-- GAME -->
-    <section class="screen" id="screen-game" aria-label="Puzzle">
+    <section class="screen" id="screen-game" aria-label="Puzzle" tabindex="-1">
       <div class="game-topbar">
         <div class="level-indicator">
           <span class="level-label">Level</span>
@@ -113,7 +114,7 @@
     </section>
 
     <!-- REVEAL -->
-    <section class="screen" id="screen-reveal" aria-label="Result">
+    <section class="screen" id="screen-reveal" aria-label="Result" tabindex="-1" aria-live="polite">
       <div class="reveal-box">
         <p class="reveal-kicker" id="reveal-kicker"></p>
         <h2 class="reveal-word" id="reveal-word"></h2>
@@ -126,11 +127,20 @@
     </section>
 
     <!-- COMPLETE -->
-    <section class="screen" id="screen-complete" aria-label="All levels complete">
+    <section class="screen" id="screen-complete" aria-label="All levels complete" tabindex="-1" aria-live="polite">
       <div class="reveal-box">
         <p class="reveal-kicker">All ten solved</p>
         <h2 class="reveal-word">You two think alike.</h2>
         <p class="reveal-detail">Ten hidden words, zero shared vocabulary going in — you built one together, icon by icon.</p>
+      </div>
+    </section>
+
+    <section class="screen" id="screen-error" aria-label="Puzzle loading error" tabindex="-1" role="alert">
+      <div class="reveal-box">
+        <p class="reveal-kicker">Loading problem</p>
+        <h2 class="reveal-word">Puzzle unavailable</h2>
+        <p class="reveal-detail" id="load-error-message"></p>
+        <button type="button" id="load-retry" class="primary-button">Try loading again</button>
       </div>
     </section>
 

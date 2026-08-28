@@ -13,11 +13,11 @@
 // cannot enforce that the same way, because both players load the same
 // public JS bundle. What this app does instead: the host is treated as
 // Player A and the joiner as Player B, decided once at connection time, and
-// each role's code path only ever fetches its own `words/wNNN.a.js` /
-// `wNNN.b.js` chunk (see game.js) — so a normal play session's network
+// each role's code path only ever fetches its own generated role bank
+// (see game.js) — so a normal play session's network
 // tab never shows the partner's letters, and the shared `manifest.js` ships
 // only a SHA-256 hash of each answer, never the plaintext word. A player who
-// deliberately guesses the sibling file's URL could still fetch it — that is
+// deliberately guesses the sibling bank's URL could still fetch it — that is
 // an inherent limit of hosting with no backend, not something the UI hides.
 
 import Peer from "peerjs";
@@ -54,10 +54,11 @@ const ICE_CONFIG = {
   ],
 };
 
-export function randomRoomCode(length = 5) {
+export function randomRoomCode(length = 7) {
+  const values = crypto.getRandomValues(new Uint8Array(length));
   let code = "";
   for (let i = 0; i < length; i++) {
-    code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+    code += CODE_ALPHABET[values[i] % CODE_ALPHABET.length];
   }
   return code;
 }
@@ -112,6 +113,7 @@ export class Room extends EventTarget {
   async join(code) {
     this.role = "B";
     this.code = code.trim().toUpperCase();
+    if (!new RegExp(`^[${CODE_ALPHABET}]{7}$`).test(this.code)) throw new Error("Room codes contain seven letters or digits.");
     this.peer = new Peer({ config: ICE_CONFIG });
 
     await new Promise((resolve, reject) => {

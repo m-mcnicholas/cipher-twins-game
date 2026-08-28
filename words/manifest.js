@@ -1,7 +1,9 @@
 // Public, shared word-bank metadata. Deliberately contains no plaintext
 // letters and no plaintext answers — only a SHA-256 hash per word, so a
-// completed guess can be verified client-side without ever shipping any
-// word itself in a file both roles load. See w###.a.js / w###.b.js for the
+// completed guess can be checked without putting the plaintext answer in
+// this shared manifest. This is casual puzzle concealment, not security:
+// dictionary hashes can be matched and all static assets remain public.
+// See w###.a.js / w###.b.js for the
 // actual per-role letters, which are only ever fetched by the matching
 // role's code path once a specific word id has been chosen for a level.
 //

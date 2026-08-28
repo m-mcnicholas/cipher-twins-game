@@ -1,50 +1,53 @@
 import { Room } from "./network.js";
 import { ICONS, ICON_GROUPS, renderIcon } from "./icons.js";
-import { WORDS, LEVEL_SCHEDULE } from "./words/manifest.js";
+import { applyBoardOperation, canHostAdvance, validateIncomingMessage } from "./protocol.js";
 
 const $ = (id) => document.getElementById(id);
+let WORDS = [];
+let LEVEL_SCHEDULE = [];
+let WORD_BY_ID = new Map();
+let WORD_IDS = new Set();
+let manifestReady = false;
+let manifestPromise;
+const pendingMessages = [];
+const screens = Object.fromEntries(["lobby", "connecting", "game", "reveal", "complete", "error"].map((name) => [name, $(`screen-${name}`)]));
 
-const screens = {
-  lobby: $("screen-lobby"),
-  connecting: $("screen-connecting"),
-  game: $("screen-game"),
-  reveal: $("screen-reveal"),
-  complete: $("screen-complete"),
-};
-
-function showScreen(name) {
-  for (const [key, el] of Object.entries(screens)) {
-    el.toggleAttribute("data-active", key === name);
-  }
+function showScreen(name, { focus = true } = {}) {
+  for (const [key, element] of Object.entries(screens)) element?.toggleAttribute("data-active", key === name);
+  if (focus) requestAnimationFrame(() => screens[name]?.focus({ preventScroll: true }));
 }
 
 async function sha256Hex(text) {
-  const bytes = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-
-// ---- app state -------------------------------------------------------
 
 const room = new Room();
 const state = {
-  role: null, // "A" | "B"
-  levelIndex: 0,
-  schedule: null, // current LEVEL_SCHEDULE entry (length, palette, maxBoardIcons)
-  wordId: null,
-  word: null, // current WORDS entry (id, length, category, answerHash) — public, hash-only
-  roleData: null, // this player's private slice for the current word
-  board: [], // [{id, by}]
-  myGuess: [],
-  myGuessStr: null,
-  submitted: false,
-  partnerGuess: null,
-  partnerSubmitted: false,
-  attempts: Object.create(null),
-  usedWordIds: new Set(), // host-only: words already drawn this session
+  role: null, levelIndex: -1, schedule: null, wordId: null, word: null, roleData: null,
+  board: [], boardRevision: 0, processedOperations: new Set(),
+  myGuess: [], myGuessStr: null, submitted: false, partnerGuess: null, partnerSubmitted: false,
+  attempts: Object.create(null), usedWordIds: new Set(), loadToken: 0, resolutionToken: 0,
 };
 
-// ---- lobby -------------------------------------------------------
+const levelPayload = () => ({ levelIndex: state.levelIndex, wordId: state.wordId });
+const maxBoardIcons = () => state.schedule?.maxBoardIcons ?? 100;
+const messageContext = () => ({
+  localRole: state.role, levelCount: LEVEL_SCHEDULE.length, levelIndex: state.levelIndex,
+  wordId: state.wordId, wordLength: state.word?.length ?? 0, wordIds: WORD_IDS,
+  allowedIconIds: new Set(state.schedule?.palette ?? []), maxBoardIcons: maxBoardIcons(),
+});
+
+async function ensureManifest() {
+  manifestPromise ??= import("./words/manifest.js").then((module) => {
+    WORDS = module.WORDS;
+    LEVEL_SCHEDULE = module.LEVEL_SCHEDULE;
+    WORD_BY_ID = new Map(WORDS.map((word) => [word.id, word]));
+    WORD_IDS = new Set(WORD_BY_ID.keys());
+    manifestReady = true;
+  });
+  return manifestPromise;
+}
 
 $("host-room-btn").addEventListener("click", async () => {
   $("host-room-btn").disabled = true;
@@ -52,8 +55,8 @@ $("host-room-btn").addEventListener("click", async () => {
     const code = await room.host();
     $("host-code-value").textContent = code;
     $("host-code-display").hidden = false;
-  } catch (err) {
-    $("host-status").textContent = "Could not create a room: " + err.message;
+  } catch (error) {
+    $("host-status").textContent = `Could not create a room: ${error.message}`;
     $("host-room-btn").disabled = false;
   }
 });
@@ -62,356 +65,405 @@ $("join-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const code = new FormData(event.target).get("code");
   if (!code) return;
-  const submitBtn = event.target.querySelector("button[type=submit]");
-  submitBtn.disabled = true;
+  const submitButton = event.target.querySelector("button[type=submit]");
+  submitButton.disabled = true;
   $("join-status").textContent = "Connecting…";
-  showScreen("connecting");
   $("connecting-message").textContent = `Joining room ${code.toUpperCase()}…`;
+  showScreen("connecting");
   try {
     await room.join(code);
-  } catch (err) {
+  } catch (error) {
     showScreen("lobby");
-    $("join-status").textContent = "Couldn't connect: " + err.message;
-    submitBtn.disabled = false;
+    $("join-status").textContent = `Couldn't connect: ${error.message}`;
+    submitButton.disabled = false;
   }
 });
 
-room.addEventListener("connected", ({ detail }) => {
+room.addEventListener("connected", async ({ detail }) => {
   state.role = detail.role;
   $("role-indicator").textContent = `You are Player ${detail.role} · Room ${detail.code}`;
-  if (state.role === "A") {
-    hostAdvanceTo(0);
-  } else {
-    $("connecting-message").textContent = "Connected! Loading the first puzzle…";
-    showScreen("connecting");
+  $("connecting-message").textContent = "Connected! Loading the first puzzle…";
+  showScreen("connecting");
+  try {
+    await ensureManifest();
+    pendingMessages.splice(0).forEach(handleMessage);
+    if (state.role === "A") hostAdvanceTo(0);
+  } catch (error) {
+    console.error("Could not load the puzzle manifest:", error);
+    showLoadError("The puzzle index could not be loaded. Check your connection and reload the page.");
   }
 });
-
-room.addEventListener("message", ({ detail }) => handleMessage(detail));
-
-room.addEventListener("peer-left", () => {
-  const banner = $("connection-banner");
-  banner.hidden = false;
-  banner.textContent = "Your partner disconnected. Reload to start a new room.";
+room.addEventListener("message", ({ detail }) => {
+  if (!manifestReady) pendingMessages.push(detail);
+  else handleMessage(detail);
 });
-
+room.addEventListener("peer-left", () => {
+  $("connection-banner").hidden = false;
+  $("connection-banner").textContent = "Your partner disconnected. Reload to start a new room.";
+});
 room.addEventListener("error", ({ detail }) => {
   console.error("Room error:", detail.err);
   if (room.role === "A" && !room.conn?.open && screens.lobby.hasAttribute("data-active")) {
-    $("host-status").textContent =
-      "That connection attempt failed (" + (detail.err?.message ?? "network error") + "). Still waiting — have your partner try again.";
+    $("host-status").textContent = `That connection attempt failed (${detail.err?.message ?? "network error"}). Still waiting — have your partner try again.`;
   }
 });
 
-function handleMessage(message) {
-  switch (message.type) {
-    case "board:update":
-      state.board = message.payload.icons;
-      renderBoard();
-      break;
-    case "guess:submit":
-      if (message.payload.levelIndex !== state.levelIndex) return;
-      state.partnerGuess = message.payload.guess;
-      state.partnerSubmitted = true;
-      checkResolution();
-      break;
-    case "level:advance":
-      applyLevel(message.payload.index, message.payload.wordId);
-      break;
-    case "level:retry":
-      if (message.payload.levelIndex !== state.levelIndex) return;
-      resetGuessesKeepBoard();
-      break;
-    case "request:advance":
-      // Only the host draws words, so it alone acts on an advance request —
-      // this keeps word selection single-sourced even if both players click
-      // "Next level" at once.
-      if (state.role === "A") hostAdvanceTo(message.payload.index);
-      break;
+function handleMessage(rawMessage) {
+  const message = validateIncomingMessage(rawMessage, messageContext());
+  if (!message) {
+    console.warn("Ignored an invalid or out-of-context peer message.");
+    return;
   }
+  const { type, payload } = message;
+  if (type === "level:advance") {
+    if (payload.index === LEVEL_SCHEDULE.length) showScreen("complete");
+    else if (payload.index === state.levelIndex + 1 || (payload.index === state.levelIndex && payload.wordId === state.wordId)) applyLevel(payload.index, payload.wordId);
+  } else if (type === "request:advance") hostAdvanceTo(payload.index);
+  else if (type === "board:op") hostApplyBoardOperation(payload.operation, "B");
+  else if (type === "board:state" && payload.revision > state.boardRevision) {
+    state.board = payload.icons;
+    state.boardRevision = payload.revision;
+    renderBoard();
+  } else if (type === "guess:submit") {
+    state.partnerGuess = payload.guess;
+    state.partnerSubmitted = true;
+    checkResolution();
+  } else if (type === "request:retry") hostRetry();
+  else if (type === "level:retry") resetGuessesKeepBoard();
 }
 
-// ---- level loading -------------------------------------------------------
-
-// Host-only: picks the next word and is the single source of truth for
-// which word a level uses, since word choice is now random. Applies it
-// locally and broadcasts it so the joiner loads the identical word.
 function hostAdvanceTo(index) {
+  if (state.role !== "A" || !canHostAdvance(state.levelIndex, index, LEVEL_SCHEDULE.length)) return;
   if (index >= LEVEL_SCHEDULE.length) {
+    state.levelIndex = index;
+    state.wordId = null;
+    state.loadToken += 1;
     room.send("level:advance", { index, wordId: null });
     showScreen("complete");
     return;
   }
   const targetLength = LEVEL_SCHEDULE[index].length;
-  let candidates = WORDS.filter((w) => w.length === targetLength && !state.usedWordIds.has(w.id));
-  if (candidates.length === 0) candidates = WORDS.filter((w) => w.length === targetLength); // pool exhausted, allow repeats
-  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  let candidates = WORDS.filter((word) => word.length === targetLength && !state.usedWordIds.has(word.id));
+  if (!candidates.length) candidates = WORDS.filter((word) => word.length === targetLength);
+  const chosen = candidates[crypto.getRandomValues(new Uint32Array(1))[0] % candidates.length];
   state.usedWordIds.add(chosen.id);
+  beginLevel(index, chosen.id);
   room.send("level:advance", { index, wordId: chosen.id });
-  applyLevel(index, chosen.id);
+  loadLevelData(index, chosen.id, state.loadToken);
 }
 
-async function applyLevel(index, wordId) {
-  if (index >= LEVEL_SCHEDULE.length) {
-    showScreen("complete");
+function beginLevel(index, wordId) {
+  const word = WORD_BY_ID.get(wordId);
+  const schedule = LEVEL_SCHEDULE[index];
+  if (!word || !schedule || word.length !== schedule.length) return false;
+  state.loadToken += 1;
+  state.resolutionToken += 1;
+  Object.assign(state, {
+    levelIndex: index, schedule, wordId, word, roleData: null, board: [], boardRevision: 0,
+    myGuess: Array(word.length).fill(null), myGuessStr: null, submitted: false,
+    partnerGuess: null, partnerSubmitted: false,
+  });
+  state.processedOperations.clear();
+  state.attempts[wordId] ??= 0;
+  $("connecting-message").textContent = `Loading level ${index + 1}…`;
+  showScreen("connecting");
+  return true;
+}
+
+function applyLevel(index, wordId) {
+  if (index === state.levelIndex && wordId === state.wordId && state.roleData) return;
+  if (!beginLevel(index, wordId)) return showLoadError("The selected puzzle is invalid.");
+  loadLevelData(index, wordId, state.loadToken);
+}
+
+async function loadLevelData(index, wordId, token) {
+  try {
+    const module = state.role === "A" ? await import("./words/role-a.js") : await import("./words/role-b.js");
+    if (token !== state.loadToken || index !== state.levelIndex || wordId !== state.wordId) return;
+    const roleData = module.default[wordId];
+    if (!validateRoleData(roleData, state.word)) throw new Error("Puzzle data did not match its manifest entry.");
+    state.roleData = roleData;
+    renderLevel();
+  } catch (error) {
+    if (token !== state.loadToken) return;
+    console.error("Could not load puzzle data:", error);
+    showLoadError("This puzzle could not be loaded. Check your connection and try again.");
+  }
+}
+
+function validateRoleData(data, word) {
+  if (!data || typeof data !== "object" || !data.hints || typeof data.hints !== "object") return false;
+  if (!Array.isArray(data.positions) || !Array.isArray(data.letters) || data.positions.length !== data.letters.length) return false;
+  return data.positions.every((position, index) => Number.isInteger(position) && position >= 1 && position <= word.length && /^[A-Z]$/.test(data.letters[index]));
+}
+
+function showLoadError(message) {
+  $("load-error-message").textContent = message;
+  showScreen("error");
+}
+
+$("load-retry").addEventListener("click", () => {
+  if (!state.word || state.levelIndex < 0) {
+    location.reload();
     return;
   }
-  state.levelIndex = index;
-  state.schedule = LEVEL_SCHEDULE[index];
-  state.wordId = wordId;
-  state.word = WORDS.find((w) => w.id === wordId);
-  state.board = [];
-  state.myGuess = Array(state.word.length).fill(null);
-  state.myGuessStr = null;
-  state.submitted = false;
-  state.partnerGuess = null;
-  state.partnerSubmitted = false;
+  state.loadToken += 1;
+  $("connecting-message").textContent = `Retrying level ${state.levelIndex + 1}…`;
+  showScreen("connecting");
+  loadLevelData(state.levelIndex, state.wordId, state.loadToken);
+});
 
-  const roleFile = state.role === "A" ? "a" : "b";
-  const mod = await import(`./words/${wordId}.${roleFile}.js`);
-  state.roleData = mod.default;
-
-  state.attempts[wordId] ??= 0;
-
-  $("level-number").textContent = String(index + 1);
-  renderHints();
-  renderWordTrack();
-  renderPalette();
-  renderBoard();
-  renderAnswerBar();
-  renderLetterPicker();
-  renderAttempts();
+function renderLevel() {
+  $("level-number").textContent = String(state.levelIndex + 1);
+  renderHints(); renderWordTrack(); renderPalette(); renderBoard(); renderAnswerBar(); renderLetterPicker(); renderAttempts();
   $("answer-status").textContent = "";
   showScreen("game");
 }
 
 function renderHints() {
-  const labels = {
-    category: "Category",
-    length: "Length",
-    syllables: "Syllables",
-    firstSound: "First sound",
-  };
-  const chips = Object.entries(state.roleData.hints)
-    .map(([key, value]) => `<span class="hint-chip"><strong>${labels[key] ?? key}:</strong> ${value}</span>`)
-    .join("");
-  $("player-hints").innerHTML = chips;
+  const labels = { category: "Category", length: "Length", syllables: "Syllables", firstSound: "First sound" };
+  const container = $("player-hints");
+  container.replaceChildren();
+  for (const [key, value] of Object.entries(state.roleData.hints)) {
+    if (typeof value !== "string" && typeof value !== "number") continue;
+    const chip = document.createElement("span");
+    chip.className = "hint-chip";
+    const strong = document.createElement("strong");
+    strong.textContent = `${labels[key] ?? key}:`;
+    chip.append(strong, ` ${value}`);
+    container.append(chip);
+  }
 }
 
 function renderWordTrack() {
-  const held = new Map(state.roleData.positions.map((pos, i) => [pos, state.roleData.letters[i]]));
-  let html = "";
-  for (let pos = 1; pos <= state.word.length; pos++) {
-    if (held.has(pos)) {
-      html += `<div class="track-cell track-cell-mine"><div class="track-letter">${held.get(pos)}</div><span class="track-pos">${pos}</span></div>`;
-    } else {
-      html += `<div class="track-cell track-cell-partner" aria-hidden="true"><div class="track-blank">?</div><span class="track-pos">${pos}</span></div>`;
-    }
+  const held = new Map(state.roleData.positions.map((position, index) => [position, state.roleData.letters[index]]));
+  const track = $("word-track");
+  track.replaceChildren();
+  for (let position = 1; position <= state.word.length; position += 1) {
+    const mine = held.has(position);
+    const cell = document.createElement("div");
+    cell.className = `track-cell ${mine ? "track-cell-mine" : "track-cell-partner"}`;
+    if (!mine) cell.setAttribute("aria-hidden", "true");
+    const glyph = document.createElement("div");
+    glyph.className = mine ? "track-letter" : "track-blank";
+    glyph.textContent = held.get(position) ?? "?";
+    const label = document.createElement("span");
+    label.className = "track-pos";
+    label.textContent = String(position);
+    cell.append(glyph, label);
+    track.append(cell);
   }
-  $("word-track").innerHTML = html;
+}
+
+function iconElement(iconId) {
+  const span = document.createElement("span");
+  span.className = "icon-render";
+  span.innerHTML = renderIcon(iconId);
+  return span;
 }
 
 function renderPalette() {
   const allowed = new Set(state.schedule.palette);
-  const groups = ICON_GROUPS.map((group) => {
-    const ids = Object.keys(ICONS).filter((id) => ICONS[id].group === group && allowed.has(id));
-    if (ids.length === 0) return "";
-    const buttons = ids
-      .map(
-        (id) => `<button type="button" class="palette-icon" data-icon-id="${id}" title="${ICONS[id].label}">
-          <span class="icon-render">${renderIcon(id)}</span>
-          <span class="icon-label">${ICONS[id].label}</span>
-        </button>`
-      )
-      .join("");
-    return `<div class="palette-group"><h3>${group}</h3><div class="palette-row">${buttons}</div></div>`;
-  }).join("");
-  $("palette-section").innerHTML = groups;
-  $("palette-section").querySelectorAll(".palette-icon").forEach((btn) => {
-    btn.addEventListener("click", () => appendIcon(btn.dataset.iconId));
-  });
-  updatePaletteDisabledState();
-}
-
-function updatePaletteDisabledState() {
-  const max = state.schedule.maxBoardIcons;
-  const full = max != null && state.board.length >= max;
-  $("palette-section").querySelectorAll(".palette-icon").forEach((btn) => {
-    btn.disabled = full;
-  });
-  $("board-slots").textContent = max != null ? `${state.board.length} / ${max} icons` : `${state.board.length} icons`;
-}
-
-function appendIcon(id) {
-  const max = state.schedule.maxBoardIcons;
-  if (max != null && state.board.length >= max) return;
-  state.board.push({ id, by: state.role });
-  renderBoard();
-  room.send("board:update", { icons: state.board });
-}
-
-function renderBoard() {
-  const board = $("message-board");
-  if (state.board.length === 0) {
-    board.innerHTML = `<p class="board-empty">No icons placed yet — start describing your letters.</p>`;
-  } else {
-    board.innerHTML = state.board
-      .map(
-        (entry) => `<div class="board-icon board-icon-${entry.by}" role="listitem" title="${ICONS[entry.id].label}">
-          <span class="icon-render">${renderIcon(entry.id)}</span>
-        </div>`
-      )
-      .join("");
+  const section = $("palette-section");
+  section.replaceChildren();
+  for (const groupName of ICON_GROUPS) {
+    const ids = Object.keys(ICONS).filter((id) => ICONS[id].group === groupName && allowed.has(id));
+    if (!ids.length) continue;
+    const group = document.createElement("div");
+    group.className = "palette-group";
+    const heading = document.createElement("h3");
+    heading.textContent = groupName;
+    const row = document.createElement("div");
+    row.className = "palette-row";
+    for (const id of ids) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "palette-icon";
+      button.title = ICONS[id].label;
+      button.addEventListener("click", () => submitBoardOperation("add", id));
+      const label = document.createElement("span");
+      label.className = "icon-label";
+      label.textContent = ICONS[id].label;
+      button.append(iconElement(id), label);
+      row.append(button);
+    }
+    group.append(heading, row);
+    section.append(group);
   }
   updatePaletteDisabledState();
 }
 
-$("board-undo").addEventListener("click", () => {
-  if (state.board.length === 0) return;
-  state.board.pop();
-  renderBoard();
-  room.send("board:update", { icons: state.board });
-});
+function updatePaletteDisabledState() {
+  const full = state.board.length >= maxBoardIcons();
+  $("palette-section").querySelectorAll(".palette-icon").forEach((button) => { button.disabled = full; });
+  $("board-undo").disabled = state.board.length === 0;
+  $("board-clear").disabled = state.board.length === 0;
+  $("board-slots").textContent = state.schedule?.maxBoardIcons != null ? `${state.board.length} / ${maxBoardIcons()} icons` : `${state.board.length} icons`;
+}
 
-$("board-clear").addEventListener("click", () => {
-  if (state.board.length === 0) return;
-  state.board = [];
-  renderBoard();
-  room.send("board:update", { icons: state.board });
-});
+function operationId() {
+  const randomPart = crypto.randomUUID?.() ?? [...crypto.getRandomValues(new Uint8Array(16))].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${state.role}-${randomPart}`;
+}
 
-// ---- answer entry -------------------------------------------------------
+function submitBoardOperation(kind, iconId) {
+  if (!state.roleData || (kind === "add" && state.board.length >= maxBoardIcons())) return;
+  const operation = { id: operationId(), kind, ...(kind === "add" ? { iconId } : {}) };
+  if (state.role === "A") hostApplyBoardOperation(operation, "A");
+  else room.send("board:op", { ...levelPayload(), operation });
+}
+
+function hostApplyBoardOperation(operation, by) {
+  if (state.role !== "A" || state.processedOperations.has(operation.id)) return;
+  state.processedOperations.add(operation.id);
+  const nextBoard = applyBoardOperation(state.board, operation, by, maxBoardIcons());
+  if (nextBoard === state.board) return;
+  state.board = nextBoard;
+  state.boardRevision += 1;
+  renderBoard();
+  room.send("board:state", { ...levelPayload(), revision: state.boardRevision, icons: state.board });
+}
+
+function renderBoard() {
+  const board = $("message-board");
+  board.replaceChildren();
+  if (!state.board.length) {
+    const empty = document.createElement("p");
+    empty.className = "board-empty";
+    empty.textContent = "No icons placed yet — start describing your letters.";
+    board.append(empty);
+  } else {
+    for (const entry of state.board) {
+      const wrapper = document.createElement("div");
+      wrapper.className = `board-icon board-icon-${entry.by}`;
+      wrapper.setAttribute("role", "listitem");
+      wrapper.title = ICONS[entry.iconId].label;
+      wrapper.append(iconElement(entry.iconId));
+      board.append(wrapper);
+    }
+  }
+  updatePaletteDisabledState();
+}
+
+$("board-undo").addEventListener("click", () => submitBoardOperation("undo"));
+$("board-clear").addEventListener("click", () => submitBoardOperation("clear"));
 
 function renderLetterPicker() {
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-  $("letter-picker").innerHTML = letters
-    .map((letter) => `<button type="button" class="letter-tile" data-letter="${letter}">${letter}</button>`)
-    .join("");
-  $("letter-picker").querySelectorAll(".letter-tile").forEach((btn) => {
-    btn.addEventListener("click", () => fillNextLetter(btn.dataset.letter));
-  });
+  const picker = $("letter-picker");
+  picker.replaceChildren();
+  for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "letter-tile";
+    button.textContent = letter;
+    button.addEventListener("click", () => fillNextLetter(letter));
+    picker.append(button);
+  }
 }
 
 function renderAnswerBar() {
-  $("answer-bar").innerHTML = state.myGuess
-    .map((letter) => `<span class="answer-slot ${letter ? "filled" : ""}">${letter ?? ""}</span>`)
-    .join("");
+  const bar = $("answer-bar");
+  bar.replaceChildren();
+  for (const letter of state.myGuess) {
+    const slot = document.createElement("span");
+    slot.className = `answer-slot${letter ? " filled" : ""}`;
+    slot.textContent = letter ?? "";
+    bar.append(slot);
+  }
   updateAnswerControls();
 }
 
 function updateAnswerControls() {
-  const complete = state.myGuess.every((l) => l !== null);
-  const locked = state.submitted;
-  $("answer-submit").disabled = !complete || locked;
-  $("answer-backspace").disabled = locked;
-  $("answer-clear").disabled = locked;
-  $("letter-picker").querySelectorAll(".letter-tile").forEach((btn) => (btn.disabled = locked));
-  $("answer-status").textContent = locked
-    ? state.partnerSubmitted
-      ? "Comparing guesses…"
-      : "Waiting for your partner to submit…"
-    : "";
+  const complete = state.myGuess.length > 0 && state.myGuess.every(Boolean);
+  $("answer-submit").disabled = !complete || state.submitted;
+  $("answer-backspace").disabled = state.submitted;
+  $("answer-clear").disabled = state.submitted;
+  $("letter-picker").querySelectorAll(".letter-tile").forEach((button) => { button.disabled = state.submitted; });
+  $("answer-status").textContent = state.submitted ? (state.partnerSubmitted ? "Comparing guesses…" : "Waiting for your partner to submit…") : "";
 }
 
 function fillNextLetter(letter) {
   if (state.submitted) return;
-  const i = state.myGuess.indexOf(null);
-  if (i === -1) return;
-  state.myGuess[i] = letter;
+  const index = state.myGuess.indexOf(null);
+  if (index >= 0) state.myGuess[index] = letter;
   renderAnswerBar();
 }
 
 $("answer-backspace").addEventListener("click", () => {
   if (state.submitted) return;
-  for (let i = state.myGuess.length - 1; i >= 0; i--) {
-    if (state.myGuess[i] !== null) {
-      state.myGuess[i] = null;
-      break;
-    }
-  }
+  const index = state.myGuess.findLastIndex(Boolean);
+  if (index >= 0) state.myGuess[index] = null;
   renderAnswerBar();
 });
-
 $("answer-clear").addEventListener("click", () => {
-  if (state.submitted) return;
-  state.myGuess.fill(null);
+  if (!state.submitted) state.myGuess.fill(null);
   renderAnswerBar();
 });
 
 function renderAttempts() {
-  const n = state.attempts[state.wordId];
-  $("attempts-indicator").textContent = n > 0 ? `Attempt ${n + 1}` : "";
+  const count = state.attempts[state.wordId] ?? 0;
+  $("attempts-indicator").textContent = count > 0 ? `Attempt ${count + 1}` : "";
 }
 
 $("answer-submit").addEventListener("click", () => {
-  if (state.myGuess.some((l) => l === null) || state.submitted) return;
+  if (state.myGuess.some((letter) => letter === null) || state.submitted) return;
   state.myGuessStr = state.myGuess.join("");
   state.submitted = true;
   state.attempts[state.wordId] += 1;
   updateAnswerControls();
-  room.send("guess:submit", { guess: state.myGuessStr, levelIndex: state.levelIndex });
+  room.send("guess:submit", { ...levelPayload(), guess: state.myGuessStr });
   checkResolution();
 });
 
 async function checkResolution() {
   if (!state.submitted || !state.partnerSubmitted) return;
+  const token = ++state.resolutionToken;
   const agree = state.myGuessStr === state.partnerGuess;
-  let correct = false;
-  if (agree) {
-    const hash = await sha256Hex(state.myGuessStr);
-    correct = hash === state.word.answerHash;
-  }
-  showReveal({ agree, correct });
+  const correct = agree && (await sha256Hex(state.myGuessStr)) === state.word.answerHash;
+  if (token === state.resolutionToken) showReveal({ agree, correct });
 }
 
-// ---- reveal -------------------------------------------------------
-
 function showReveal({ agree, correct }) {
-  const kicker = $("reveal-kicker");
-  const word = $("reveal-word");
-  const detail = $("reveal-detail");
-  const nextBtn = $("reveal-next");
-  const retryBtn = $("reveal-retry");
-
   if (agree && correct) {
-    kicker.textContent = "Solved";
-    word.textContent = state.myGuessStr;
-    detail.textContent = `You both agreed — and you were right. That took ${state.attempts[state.wordId]} attempt${state.attempts[state.wordId] === 1 ? "" : "s"}.`;
-    nextBtn.hidden = false;
-    nextBtn.disabled = false;
-    retryBtn.hidden = true;
-  } else if (agree && !correct) {
-    kicker.textContent = "Close, but not quite";
-    word.textContent = state.myGuessStr;
-    detail.textContent = "You two agreed on a word, but it isn't the one hidden here. Keep comparing letters and try again.";
-    nextBtn.hidden = true;
-    retryBtn.hidden = false;
+    $("reveal-kicker").textContent = "Solved";
+    $("reveal-word").textContent = state.myGuessStr;
+    const attempts = state.attempts[state.wordId];
+    $("reveal-detail").textContent = `You both agreed — and you were right. That took ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
+    $("reveal-next").hidden = false;
+    $("reveal-next").disabled = false;
+    $("reveal-next").dataset.targetIndex = String(state.levelIndex + 1);
+    $("reveal-retry").hidden = true;
   } else {
-    kicker.textContent = "You don't agree yet";
-    word.textContent = `${state.myGuessStr} / ${state.partnerGuess}`;
-    detail.textContent = "Your guesses don't match each other. Compare where they differ and describe those letters more.";
-    nextBtn.hidden = true;
-    retryBtn.hidden = false;
+    $("reveal-kicker").textContent = agree ? "Close, but not quite" : "You don't agree yet";
+    $("reveal-word").textContent = agree ? state.myGuessStr : `${state.myGuessStr} / ${state.partnerGuess}`;
+    $("reveal-detail").textContent = agree
+      ? "You two agreed on a word, but it isn't the one hidden here. Keep comparing letters and try again."
+      : "Your guesses don't match each other. Compare where they differ and describe those letters more.";
+    $("reveal-next").hidden = true;
+    $("reveal-retry").hidden = false;
   }
   showScreen("reveal");
 }
 
-$("reveal-next").addEventListener("click", () => {
-  const next = state.levelIndex + 1;
-  $("reveal-next").disabled = true;
-  if (state.role === "A") {
-    hostAdvanceTo(next);
-  } else {
-    room.send("request:advance", { index: next });
-  }
+$("reveal-next").addEventListener("click", (event) => {
+  const targetIndex = Number(event.currentTarget.dataset.targetIndex);
+  event.currentTarget.disabled = true;
+  if (state.role === "A") hostAdvanceTo(targetIndex);
+  else room.send("request:advance", { index: targetIndex });
+});
+$("reveal-retry").addEventListener("click", () => {
+  if (state.role === "A") hostRetry();
+  else room.send("request:retry", levelPayload());
 });
 
-$("reveal-retry").addEventListener("click", () => {
-  room.send("level:retry", { levelIndex: state.levelIndex });
+function hostRetry() {
+  if (state.role !== "A" || !state.word) return;
+  room.send("level:retry", levelPayload());
   resetGuessesKeepBoard();
-});
+}
 
 function resetGuessesKeepBoard() {
+  state.resolutionToken += 1;
   state.myGuess.fill(null);
   state.myGuessStr = null;
   state.submitted = false;
