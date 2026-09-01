@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A 2-player asymmetric co-op word puzzle. Each player can see half a hidden word's letters, but can only communicate about them through a shared icon palette.">
+  <meta name="description" content="A 2-player cooperative word game. You and your partner invent a shared language out of icons to describe half a hidden word each — no talking, no spelling.">
   <title>Cipher Twins — Michael McNicholas</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23241f3d'/%3E%3Ccircle cx='24' cy='32' r='9' fill='none' stroke='%23f2c14e' stroke-width='3'/%3E%3Cpath d='M40 22 L52 32 L40 42' fill='none' stroke='%235fd0c0' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="./styles.css">
-  <script type="module" src="./game.js"></script>
+  <script type="module" src="./app.js"></script>
 </head>
 <body>
   <a class="back-link" href="../../index.html">← Back to the archive</a>
 
   <header class="app-header">
     <div>
-      <p class="eyebrow">Asymmetric co-op puzzle</p>
+      <p class="eyebrow">Cooperative invented-language puzzle</p>
       <h1>Cipher Twins</h1>
-      <p>Each of you has half the word. You need to figure out how to communicate your half to the other person.</p>
+      <p>You each hold half of a hidden word. You can't say your letters — you build a shared language out of icons and saved sigils to get them across.</p>
     </div>
   </header>
 
@@ -32,7 +32,12 @@
           <div class="room-code-display" id="host-code-display" hidden>
             <p class="room-code-label">Room code</p>
             <p class="room-code" id="host-code-value"></p>
-            <p class="lobby-status" id="host-status">Waiting for your partner to join…</p>
+            <div class="lobby-inline-actions">
+              <button type="button" id="host-copy-code" class="quiet-button">Copy code</button>
+              <button type="button" id="host-share-link" class="quiet-button">Copy invite link</button>
+              <button type="button" id="host-cancel" class="quiet-button">Cancel room</button>
+            </div>
+            <p class="lobby-status" id="host-status" role="status" aria-live="polite">Waiting for your partner to join…</p>
           </div>
         </article>
 
@@ -49,16 +54,16 @@
       </div>
 
       <details class="how-to-play">
-        <summary>How to play (30 seconds)</summary>
+        <summary>How this works</summary>
         <ol>
-          <li>You and your partner each see <strong>different letters</strong> of the same hidden word — you can read yours, but you can't just tell your partner what they are.</li>
-          <li>Together you hold every letter, but neither of you holds enough to solve it alone.</li>
-          <li>Describe your letters to each other using only the <strong>shared icon palette</strong> — shape, position, count, category. No typing, no spelling, no numbers.</li>
-          <li>Drop icons onto the shared message board. Your partner sees them appear in real time.</li>
-          <li>When you think you know the word, spell your guess with the letter tiles. When you both agree <em>and</em> you're right, you advance.</li>
+          <li>You and your partner each see <strong>different letters</strong> of the same hidden word.</li>
+          <li>During a round you may communicate <strong>only</strong> through the game's icons, saved sigils, replies, and its own signals — no talking, typing, gestures, screen-sharing, or naming/spelling letters. Count icons and shown positions <em>are</em> fair game.</li>
+          <li>Send whole <strong>message cards</strong> into one shared conversation. Save any useful sequence you both approve as a numbered <strong>sigil</strong> you can reuse for the rest of the session.</li>
+          <li>When you think you know the word, enter it privately. Only a scrambled fingerprint of your guess is sent — never the letters. You solve it when both fingerprints match <em>and</em> the word is right.</li>
         </ol>
+        <p class="fine-print">Concealment here is casual, not bullet-proof: this is a static site with no server, so a determined partner could work around it. It's built for players who want to actually play.</p>
       </details>
-      <p class="network-note">Rooms use PeerJS for connection setup and may use Google STUN or Metered's Open Relay TURN service. Those third parties can receive connection metadata; puzzle traffic is peer-to-peer when a direct connection succeeds.</p>
+      <p class="network-note">Rooms use PeerJS for connection setup and may use Google STUN or Metered's Open Relay TURN service. Those third parties can receive connection metadata; gameplay traffic is peer-to-peer when a direct connection succeeds.</p>
     </section>
 
     <!-- CONNECTING -->
@@ -70,45 +75,77 @@
     </section>
 
     <!-- GAME -->
-    <section class="screen" id="screen-game" aria-label="Puzzle" tabindex="-1">
+    <section class="screen" id="screen-game" aria-label="Round" tabindex="-1">
       <div class="game-topbar">
-        <div class="level-indicator">
-          <span class="level-label">Level</span>
-          <span id="level-number">1</span>
-          <span class="level-of">/ 10</span>
-        </div>
+        <div class="round-indicator"><span class="round-label" id="round-label">Tutorial</span> <span id="round-number"></span></div>
         <div class="role-indicator" id="role-indicator"></div>
-        <div class="attempts-indicator" id="attempts-indicator"></div>
+        <div class="stars-indicator" id="stars-indicator" aria-label="Stars so far"></div>
+      </div>
+
+      <div class="tutorial-banner" id="tutorial-banner" hidden>
+        <p id="tutorial-text"></p>
+        <div class="tutorial-actions">
+          <button type="button" id="tutorial-next" class="primary-button">I've got it — continue</button>
+          <button type="button" id="tutorial-skip" class="quiet-button">Skip tutorials (both must agree)</button>
+          <span class="tutorial-skip-note" id="tutorial-skip-note" aria-live="polite"></span>
+        </div>
       </div>
 
       <section class="player-view" aria-label="Your letters">
-        <div class="player-hints" id="player-hints"></div>
+        <div class="round-facts">
+          <span class="fact-chip" id="fact-category"></span>
+          <span class="fact-chip" id="fact-length"></span>
+          <span class="fact-chip" id="fact-parity"></span>
+        </div>
         <div class="word-track" id="word-track" aria-label="Word layout"></div>
       </section>
 
-      <section class="board-section" aria-label="Shared message board">
-        <div class="board-header">
-          <h2>Shared board</h2>
-          <div class="board-actions">
-            <span class="board-slots" id="board-slots"></span>
-            <button type="button" id="board-undo" class="quiet-button">Undo mine</button>
-            <button type="button" id="board-clear" class="quiet-button">Clear</button>
+      <div class="game-columns">
+        <section class="conversation-section" aria-label="Shared conversation">
+          <div class="conversation-header">
+            <h2>Conversation</h2>
+            <div class="conversation-filters" role="group" aria-label="Filter conversation">
+              <button type="button" class="filter-btn" data-filter="all" aria-pressed="true">All</button>
+              <button type="button" class="filter-btn" data-filter="mine" aria-pressed="false">Mine</button>
+              <button type="button" class="filter-btn" data-filter="partner" aria-pressed="false">Partner</button>
+            </div>
           </div>
-        </div>
-        <div class="message-board" id="message-board" role="list" aria-label="Placed icons"></div>
-      </section>
+          <ol class="conversation-list" id="conversation-list" aria-live="polite"></ol>
+          <details class="archive-details" id="archive-details" hidden>
+            <summary>Earlier rounds</summary>
+            <div id="archive-body"></div>
+          </details>
+        </section>
 
-      <section class="palette-section" aria-label="Icon palette" id="palette-section"></section>
+        <section class="composer-section" aria-label="Your message composer">
+          <h2>Your message</h2>
+          <p class="reply-chip" id="reply-chip" hidden></p>
+          <div class="composer-tray" id="composer-tray" aria-label="Message being composed"></div>
+          <div class="composer-actions">
+            <button type="button" id="composer-palette-toggle" class="quiet-button" aria-expanded="false" aria-controls="palette-drawer">Icons</button>
+            <button type="button" id="composer-lexicon-toggle" class="quiet-button" aria-expanded="false" aria-controls="lexicon-drawer">Sigils</button>
+            <button type="button" id="composer-clear" class="quiet-button">Clear</button>
+            <button type="button" id="composer-send" class="primary-button" disabled>Send message</button>
+          </div>
 
-      <section class="answer-section" aria-label="Submit your answer">
-        <h2>Your guess</h2>
+          <div class="drawer" id="palette-drawer" hidden aria-label="Icon palette"></div>
+          <div class="drawer" id="lexicon-drawer" hidden aria-label="Saved sigils">
+            <div id="lexicon-confirmed"></div>
+            <div id="lexicon-pending"></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="answer-section" aria-label="Your private guess">
+        <h2>Your private guess</h2>
+        <p class="answer-hint">Only a fingerprint of this is sent. Your letters and your guess never leave this device.</p>
         <div class="answer-bar" id="answer-bar"></div>
         <div class="letter-picker" id="letter-picker"></div>
         <div class="answer-actions">
           <button type="button" id="answer-backspace" class="quiet-button">Backspace</button>
           <button type="button" id="answer-clear" class="quiet-button">Clear</button>
-          <button type="button" id="answer-submit" class="primary-button" disabled>Submit guess</button>
-          <button type="button" id="answer-unsubmit" class="quiet-button" hidden>Unsubmit</button>
+          <button type="button" id="answer-commit" class="primary-button" disabled>Commit guess</button>
+          <button type="button" id="answer-retract" class="quiet-button" hidden>Take it back</button>
         </div>
         <p class="answer-status" id="answer-status" role="status" aria-live="polite"></p>
       </section>
@@ -118,35 +155,43 @@
     <section class="screen" id="screen-reveal" aria-label="Result" tabindex="-1" aria-live="polite">
       <div class="reveal-box">
         <p class="reveal-kicker" id="reveal-kicker"></p>
+        <div class="reveal-stars" id="reveal-stars" aria-hidden="true"></div>
         <h2 class="reveal-word" id="reveal-word"></h2>
         <p class="reveal-detail" id="reveal-detail"></p>
         <div class="reveal-actions">
-          <button type="button" id="reveal-next" class="primary-button" hidden>Next level</button>
+          <button type="button" id="reveal-next" class="primary-button" hidden>Next puzzle</button>
           <button type="button" id="reveal-retry" class="quiet-button" hidden>Try again</button>
         </div>
       </div>
     </section>
 
     <!-- COMPLETE -->
-    <section class="screen" id="screen-complete" aria-label="All levels complete" tabindex="-1" aria-live="polite">
+    <section class="screen" id="screen-complete" aria-label="All puzzles complete" tabindex="-1" aria-live="polite">
       <div class="reveal-box">
-        <p class="reveal-kicker">All ten solved</p>
-        <h2 class="reveal-word">You two think alike.</h2>
-        <p class="reveal-detail">Ten hidden words, zero shared vocabulary going in — you built one together, icon by icon.</p>
+        <p class="reveal-kicker">All seven solved</p>
+        <div class="reveal-stars" id="complete-stars" aria-hidden="true"></div>
+        <h2 class="reveal-word" id="complete-score"></h2>
+        <p class="reveal-detail">Seven hidden words, no shared vocabulary going in — you built one together, icon by icon.</p>
+        <div class="reveal-actions">
+          <button type="button" id="rematch-keep" class="primary-button">Play again — keep our language</button>
+          <button type="button" id="rematch-fresh" class="quiet-button">Play again — fresh start</button>
+          <a class="quiet-button" href="../../index.html">Back to the archive</a>
+        </div>
       </div>
     </section>
 
-    <section class="screen" id="screen-error" aria-label="Puzzle loading error" tabindex="-1" role="alert">
+    <section class="screen" id="screen-error" aria-label="Problem" tabindex="-1" role="alert">
       <div class="reveal-box">
-        <p class="reveal-kicker">Loading problem</p>
-        <h2 class="reveal-word">Puzzle unavailable</h2>
+        <p class="reveal-kicker">Something went wrong</p>
+        <h2 class="reveal-word">Round unavailable</h2>
         <p class="reveal-detail" id="load-error-message"></p>
-        <button type="button" id="load-retry" class="primary-button">Try loading again</button>
+        <button type="button" id="load-retry" class="primary-button">Try again</button>
       </div>
     </section>
 
   </main>
 
-  <p class="connection-banner" id="connection-banner" role="status" aria-live="polite" hidden></p>
+  <p class="connection-banner" id="connection-banner" role="status" aria-live="assertive" hidden></p>
+  <p class="visually-hidden" id="sr-live" role="status" aria-live="polite"></p>
 </body>
 </html>

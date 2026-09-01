@@ -92,16 +92,20 @@ function recordClientId(revision, clientId) {
   }
 }
 
-function beginPuzzle(next, index, context) {
-  const info = context.nextWord ? context.nextWord({ puzzleIndex: index, runNumber: next.runNumber }) : null;
-  next.phase = "puzzle";
-  next.puzzleIndex = index;
+// Enters a tutorial exercise or a scored puzzle. Both carry a real word so the
+// pair can practise; only puzzles score. `context.nextWord` is called with
+// `{ tutorial, index, runNumber }` and returns `{ wordId, wordLength, category }`.
+function beginRound(next, { tutorial, index, context }) {
+  const info = context.nextWord ? context.nextWord({ tutorial, index, runNumber: next.runNumber }) : null;
+  next.phase = tutorial ? "tutorial" : "puzzle";
+  if (tutorial) next.tutorialIndex = index;
+  else next.puzzleIndex = index;
   next.wordId = info?.wordId ?? null;
   next.wordLength = Number.isInteger(info?.wordLength) ? info.wordLength : 0;
   next.category = info?.category ?? null;
   next.ownership = ownershipForPuzzle(next.ownershipSeed, index);
 
-  const target = paletteForPuzzle(index);
+  const target = tutorial ? [...TUTORIAL_PALETTE] : paletteForPuzzle(index);
   if (isMonotonicUnlock(next.unlockedPalette, target)) {
     next.unlockedPalette = target;
   } else {
@@ -114,13 +118,14 @@ function beginPuzzle(next, index, context) {
 
   next.messages = [];
   next.commitments = { A: null, B: null };
-  next.attempts[index] = next.attempts[index] ?? 0;
+  next.lastOutcome = null;
+  if (!tutorial) next.attempts[index] = next.attempts[index] ?? 0;
 }
 
-function archiveCurrentPuzzle(next) {
+function archiveCurrentRound(next) {
   next.archivedTranscripts.push({
-    scope: "puzzle",
-    index: next.puzzleIndex,
+    scope: next.phase === "tutorial" ? "tutorial" : "puzzle",
+    index: next.phase === "tutorial" ? next.tutorialIndex : next.puzzleIndex,
     wordId: next.wordId,
     messages: next.messages,
   });
@@ -224,7 +229,9 @@ export function reduce(revision, op, actor, context = {}) {
     }
 
     case "guess:commit": {
-      if (revision.phase !== "puzzle") return fail(revision, "You can only commit a guess during a puzzle.");
+      if (revision.phase !== "puzzle" && revision.phase !== "tutorial") {
+        return fail(revision, "You can only commit a guess during a tutorial or puzzle.");
+      }
       const next = structuredClone(revision);
       next.commitments[actor] = p.commitment;
       if (next.commitments[other(actor)] == null) {
@@ -233,9 +240,16 @@ export function reduce(revision, op, actor, context = {}) {
       const agree = next.commitments.A === next.commitments.B;
       const correct = agree ? Boolean(context.localGuessCorrect) : false;
       const outcome = resolveCommitments({ mine: next.commitments.A, theirs: next.commitments.B, correct });
+      next.commitments = { A: null, B: null };
+
+      if (next.phase === "tutorial") {
+        // Unscored: show the outcome inline, stay in the exercise.
+        next.lastOutcome = { status: outcome.status, tutorial: true, tutorialIndex: next.tutorialIndex, agree };
+        return ok(bumped(next), [{ type: "resolved", status: outcome.status, tutorial: true }]);
+      }
+
       const pi = next.puzzleIndex;
       next.attempts[pi] = (next.attempts[pi] ?? 0) + 1;
-      next.commitments = { A: null, B: null };
       next.lastOutcome = { status: outcome.status, puzzleIndex: pi, attempt: next.attempts[pi], agree };
       next.phase = "reveal";
       if (outcome.status === COMMITMENT_STATUS.SOLVED) {
@@ -249,7 +263,7 @@ export function reduce(revision, op, actor, context = {}) {
     }
 
     case "guess:retractCommit": {
-      if (revision.phase !== "puzzle") return fail(revision, "Nothing to retract.");
+      if (revision.phase !== "puzzle" && revision.phase !== "tutorial") return fail(revision, "Nothing to retract.");
       if (revision.commitments[actor] == null) return ok(revision, [{ type: "noop" }]);
       if (revision.commitments[other(actor)] != null) {
         return fail(revision, "Both private guesses already arrived — wait for the result.");
@@ -269,7 +283,7 @@ export function reduce(revision, op, actor, context = {}) {
         }
         next.tutorialIndex = TUTORIAL_COUNT;
         next.tutorialSkipVotes = { A: false, B: false };
-        beginPuzzle(next, 0, context);
+        beginRound(next, { tutorial: false, index: 0, context });
         return ok(bumped(next), [{ type: "tutorialsSkipped" }]);
       }
       return ok(bumped(next), [{ type: "skipVote", role: actor, vote: p.vote }]);
@@ -286,22 +300,17 @@ export function reduce(revision, op, actor, context = {}) {
 
       const next = structuredClone(revision);
       if (revision.phase === "lobby") {
-        next.phase = "tutorial";
-        next.tutorialIndex = 0;
-        next.messages = [];
+        beginRound(next, { tutorial: true, index: 0, context });
         return ok(bumped(next), [{ type: "phase", phase: "tutorial", tutorialIndex: 0 }]);
       }
       if (revision.phase === "tutorial") {
-        if (next.messages.length) {
-          next.archivedTranscripts.push({ scope: "tutorial", index: next.tutorialIndex, messages: next.messages });
-        }
-        next.messages = [];
+        if (next.messages.length) archiveCurrentRound(next);
         if (next.tutorialIndex + 1 < TUTORIAL_COUNT) {
-          next.tutorialIndex += 1;
+          beginRound(next, { tutorial: true, index: next.tutorialIndex + 1, context });
           return ok(bumped(next), [{ type: "phase", phase: "tutorial", tutorialIndex: next.tutorialIndex }]);
         }
         next.tutorialIndex = TUTORIAL_COUNT;
-        beginPuzzle(next, 0, context);
+        beginRound(next, { tutorial: false, index: 0, context });
         return ok(bumped(next), [{ type: "phase", phase: "puzzle", puzzleIndex: 0 }]);
       }
       if (revision.phase === "reveal") {
@@ -309,7 +318,7 @@ export function reduce(revision, op, actor, context = {}) {
           && next.lastOutcome.status === COMMITMENT_STATUS.SOLVED
           && next.lastOutcome.puzzleIndex === next.puzzleIndex;
         if (!solved) return fail(revision, "This puzzle is not solved yet.");
-        archiveCurrentPuzzle(next);
+        archiveCurrentRound(next);
         const nextIndex = next.puzzleIndex + 1;
         next.lastOutcome = null;
         if (nextIndex >= PUZZLE_COUNT) {
@@ -317,7 +326,7 @@ export function reduce(revision, op, actor, context = {}) {
           next.messages = [];
           return ok(bumped(next), [{ type: "phase", phase: "complete" }]);
         }
-        beginPuzzle(next, nextIndex, context);
+        beginRound(next, { tutorial: false, index: nextIndex, context });
         return ok(bumped(next), [{ type: "phase", phase: "puzzle", puzzleIndex: nextIndex }]);
       }
       return fail(revision, "Cannot advance from here.");
@@ -353,7 +362,7 @@ export function reduce(revision, op, actor, context = {}) {
         next.sigilCounter = 0;
         next.archivedTranscripts = [];
       }
-      beginPuzzle(next, 0, context);
+      beginRound(next, { tutorial: false, index: 0, context });
       if (p.keepLexicon) next.unlockedPalette = fullPalette();
       return ok(bumped(next), [{ type: "rematch", keepLexicon: p.keepLexicon }]);
     }

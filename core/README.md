@@ -1,9 +1,8 @@
-# Cipher Twins core (cooperative-language redesign — phase 1)
+# Cipher Twins core (cooperative-language redesign)
 
-Backend-free, UI-free foundation for the redesign. The existing 10-level game in
-`../game.js` still runs on the old `../protocol.js` / `../network.js` path and is
-untouched apart from sharing `sha256.js`. Phase 2 builds the new interface on the
-modules here and retires the old path.
+Backend-free foundation for the redesign. Phase 1 built the modules here; phase 2
+built `../app.js` on top of them and retired the old `game.js` / `protocol.js`
+board game.
 
 | module | responsibility |
 | --- | --- |
@@ -27,9 +26,20 @@ guesses, retry, keep-lexicon rematch, disconnect/rejoin, unrecoverable host
 loss). Every broadcast in the paired flows is asserted free of forbidden keys
 and plaintext answers.
 
-## Not in this phase
+## Phase 2 (done)
 
-New UI, message-card composer, combined conversation view, archived-transcript
-drawer, responsive/a11y layer, curated word bank + metadata + bank validator,
-tutorial (FISH/LAMP) and bot-demo scripts, delta (vs. full) snapshot sync, and
-wiring `game.js` onto this reducer.
+`../app.js` + rewritten `../index.html` / `../styles.css`: message-card composer,
+combined All/Mine/Partner conversation, archived-transcript drawer, sigil lexicon
+(propose / approve / insert / expand), commitment guessing, reveal + stars,
+keep-lexicon / fresh rematch, physical-keyboard letter entry, live-region
+announcements, semantic hidden cells, Player A/B text beside colour. Curated bank
+(`words/bank.js` + `bank-odd/even.js`, `scripts/build-cipher-bank.mjs`) with tier
+/ category / familiarity / pars validation. Same-machine `local-bridge.js`
+transport and `tests/cipher-twins.spec.js` two-page e2e.
+
+## Still open (later phases)
+
+Full WCAG audit and the deeper responsive drawer behaviour; session-storage
+snapshot persistence + PeerJS reconnect/rejoin recovery UI; the scripted solo
+bot demo; delta (vs. full) snapshot sync; and playtest-driven tuning of
+`FAMILIARITY` and the scoring pars with ≥5 novice pairs.
