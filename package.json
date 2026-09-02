@@ -1,0 +1,22 @@
+{
+  "name": "cipher-twins-game",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A 2-player asymmetric co-op word puzzle: each player sees a different, incomplete slice of a hidden word and must reconstruct it with a partner using only a shared icon palette.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "preview:lan": "node scripts/preview-lan.mjs",
+    "dev:lan": "node scripts/preview-lan.mjs --dev",
+    "generate:word-banks": "node scripts/build-word-banks.mjs",
+    "test:logic": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  },
+  "devDependencies": {
+    "vite": "7.3.6"
+  }
+}
