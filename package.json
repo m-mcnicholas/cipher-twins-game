@@ -1,0 +1,23 @@
+{
+  "name": "cipher-twins-game",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A 2-player cooperative word game. You and your partner invent a shared language out of icons to describe half a hidden word each — no talking, no spelling.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "preview:lan": "node scripts/preview-lan.mjs",
+    "dev:lan": "node scripts/preview-lan.mjs --dev",
+    "generate:word-banks": "node scripts/build-word-banks.mjs",
+    "generate:cipher-bank": "node scripts/build-cipher-bank.mjs",
+    "test:logic": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  },
+  "devDependencies": {
+    "vite": "7.3.6"
+  }
+}
