@@ -87,9 +87,12 @@ export class Room extends EventTarget {
     conn.on("error", (err) => this._emit("error", { err }));
   }
 
-  async host() {
+  // `code` reclaims a specific room id, which a host uses when reconnecting to a
+  // game already in progress. Omit it to start a fresh room.
+  async host(code) {
     this.role = "A";
-    this.code = randomRoomCode();
+    this.code = (code || randomRoomCode()).toUpperCase();
+    if (!new RegExp(`^[${CODE_ALPHABET}]{7}$`).test(this.code)) throw new Error("Room codes contain seven letters or digits.");
     this.peer = new Peer(ROOM_PREFIX + this.code, { config: ICE_CONFIG });
 
     await new Promise((resolve, reject) => {
@@ -98,12 +101,18 @@ export class Room extends EventTarget {
     });
 
     this.peer.on("connection", (conn) => {
-      if (this.conn) {
-        conn.close(); // room already has a partner; refuse extras
+      // Refuse a genuine third party, but accept a connection that replaces one
+      // whose socket has closed — that is the disconnected partner rejoining.
+      if (this.conn && this.conn.open) {
+        conn.close();
         return;
       }
+      const isReplacement = this._everConnected;
       this._wireConnection(conn);
-      conn.once("open", () => this._emit("connected", { role: this.role, code: this.code }));
+      conn.once("open", () => {
+        this._everConnected = true;
+        this._emit(isReplacement ? "peer-rejoined" : "connected", { role: this.role, code: this.code });
+      });
     });
 
     this.peer.on("error", (err) => this._emit("error", { err }));

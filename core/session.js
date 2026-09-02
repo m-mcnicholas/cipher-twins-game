@@ -12,9 +12,11 @@
 
 import {
   createInitialRevision, operationContext, reduce, snapshot, fromSnapshot,
-  prepareRecovery, syncResponse,
+  prepareRecovery, syncResponse, applyDelta,
 } from "./revision.js";
 import { validateOperation, validateBroadcast } from "./messages.js";
+
+const OP_LOG_CAP = 128;
 
 export class GameHost extends EventTarget {
   /**
@@ -36,6 +38,9 @@ export class GameHost extends EventTarget {
     // Set by the host's own UI (or a test) to its current local correctness.
     // Consulted only when both commitments have arrived and they agree.
     this.localGuessCorrect = false;
+
+    // Recent state-changing ops, newest last, for delta sync after a brief drop.
+    this.opLog = [];
 
     this._onMessage = (event) => this._handleFromJoiner(event.detail);
     endpoint.addEventListener("message", this._onMessage);
@@ -59,6 +64,10 @@ export class GameHost extends EventTarget {
     }
     const changed = result.revision.version !== this.revision.version;
     this.revision = result.revision;
+    if (changed && !result.ephemeral) {
+      this.opLog.push({ version: this.revision.version, type: op.type, payload: op.payload, actor });
+      if (this.opLog.length > OP_LOG_CAP) this.opLog.splice(0, this.opLog.length - OP_LOG_CAP);
+    }
     for (const effect of result.effects) {
       this.dispatchEvent(new CustomEvent("effect", { detail: { ...effect, actor } }));
     }
@@ -74,8 +83,14 @@ export class GameHost extends EventTarget {
   _handleFromJoiner(raw) {
     if (raw && (raw.type === "sync:request" || raw.type === "session:hello")) {
       const have = raw.payload?.haveVersion ?? raw.payload?.lastVersion ?? 0;
-      const response = syncResponse(this.revision, have);
-      if (response.mode === "full") this.endpoint.send("sync:full", { revision: response.revision });
+      const response = syncResponse(this.revision, have, this.opLog);
+      if (response.mode === "full") {
+        this.endpoint.send("sync:full", { revision: response.revision });
+      } else if (response.mode === "delta") {
+        this.endpoint.send("revision:delta", {
+          fromVersion: response.fromVersion, toVersion: response.toVersion, ops: response.ops,
+        });
+      }
       return;
     }
     const op = validateOperation(raw, operationContext(this.revision, "B"));
@@ -142,6 +157,24 @@ export class GameClient extends EventTarget {
       this.revision = fromSnapshot(incoming);
       this.recommitRequired = false;
       this.dispatchEvent(new CustomEvent("revision", { detail: { version: incoming.version } }));
+      return;
+    }
+    if (broadcast.type === "revision:delta") {
+      const { fromVersion, toVersion, ops } = broadcast.payload;
+      if (!this.revision || this.revision.version !== fromVersion) {
+        // We are not exactly where this delta starts — ask for a full snapshot.
+        this.requestSync();
+        return;
+      }
+      const validate = (candidate, actor) =>
+        validateOperation(candidate, operationContext(this.revision, actor));
+      const result = applyDelta(this.revision, ops, validate);
+      if (!result.ok || result.revision.version !== toVersion) {
+        this.requestSync();
+        return;
+      }
+      this.revision = result.revision;
+      this.dispatchEvent(new CustomEvent("revision", { detail: { version: toVersion } }));
     }
   }
 

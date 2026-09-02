@@ -37,9 +37,30 @@ announcements, semantic hidden cells, Player A/B text beside colour. Curated ban
 / category / familiarity / pars validation. Same-machine `local-bridge.js`
 transport and `tests/cipher-twins.spec.js` two-page e2e.
 
-## Still open (later phases)
+## Phase 3 (done)
 
-Full WCAG audit and the deeper responsive drawer behaviour; session-storage
-snapshot persistence + PeerJS reconnect/rejoin recovery UI; the scripted solo
-bot demo; delta (vs. full) snapshot sync; and playtest-driven tuning of
-`FAMILIARITY` and the scoring pars with ≥5 novice pairs.
+- **Delta sync** — `syncResponse` replays a contiguous run of delta-safe ops
+  (`DELTA_SAFE_OPS`: messages, sigils, presence) from a bounded host op-log;
+  a round/phase change or a commit in the gap forces a full snapshot.
+  `applyDelta` re-validates every op through `validateOperation` before the
+  reducer, so a tampered delta can't smuggle a bad payload.
+- **Recovery** — `../app.js` persists the host snapshot + both identities to
+  `sessionStorage`; the lobby offers *Reconnect / Discard*. `network.js` lets a
+  host reclaim its room id (`host(code)`) and accept a replacement connection
+  for a dropped partner (`peer-rejoined`); the joiner auto-retries `join`. A
+  `#recovery-panel` alertdialog offers *Retry / Return to lobby / Start a new
+  room* when reconnection fails or the host is gone. `prepareRecovery` still
+  clears half-finished commitments and asks both players to recommit.
+- **Solo bot demo** — `core/bot-demo.js` (`?demo=1` from the lobby): a
+  LoopbackChannel drives both sides through the whole loop with captions; the
+  scored game stays two-player (`state.demo` disables local input).
+- **A11y / responsive pass** — Escape closes drawers and restores focus, one
+  drawer open at a time, message aria-names include the reply target, a
+  non-colour glyph per player, coarse-pointer target sizes, and a sticky word
+  track + composer bar with the conversation scrolling between them on narrow
+  screens.
+
+## Still open
+
+Playtest-driven tuning of `FAMILIARITY` and the scoring pars with ≥5 novice
+pairs (human-in-the-loop — see the plan's acceptance criteria).

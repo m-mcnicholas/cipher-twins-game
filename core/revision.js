@@ -402,11 +402,52 @@ export function prepareRecovery(revision) {
   return { revision: next, recommitRequired: hadPending && next.phase === "puzzle" };
 }
 
-// Host's answer to a `sync:request`. Phase 1 always replies with a full
-// sanitized snapshot when the caller is behind; deltas are a later optimisation.
-export function syncResponse(revision, haveVersion) {
+// Operations a joiner can safely replay from an op-log delta without the host's
+// word-selection context. Anything that changes round or phase, or resolves a
+// commitment, forces a full snapshot instead.
+export const DELTA_SAFE_OPS = new Set([
+  "message:send", "message:retract",
+  "sigil:propose", "sigil:confirm", "sigil:reject",
+  "presence:update",
+]);
+
+// Host's answer to a `sync:request`. Replays a contiguous run of delta-safe ops
+// when it can; otherwise sends a full sanitized snapshot.
+export function syncResponse(revision, haveVersion, opLog = []) {
   if (Number.isInteger(haveVersion) && haveVersion >= revision.version) {
     return { mode: "up-to-date", version: revision.version };
   }
+  const missed = opLog
+    .filter((entry) => entry.version > haveVersion && entry.version <= revision.version)
+    .sort((a, b) => a.version - b.version);
+  const contiguous =
+    missed.length > 0 &&
+    missed[0].version === haveVersion + 1 &&
+    missed[missed.length - 1].version === revision.version &&
+    missed.every((entry, i) => i === 0 || entry.version === missed[i - 1].version + 1) &&
+    missed.every((entry) => DELTA_SAFE_OPS.has(entry.type));
+  if (contiguous) {
+    return {
+      mode: "delta",
+      fromVersion: haveVersion,
+      toVersion: revision.version,
+      ops: missed.map((entry) => ({ type: entry.type, payload: entry.payload, actor: entry.actor })),
+    };
+  }
   return { mode: "full", revision: snapshot(revision) };
+}
+
+// Joiner-side replay of a delta. `validate` is `(op, actor) => normalisedOp|null`
+// (wired to validateOperation + the joiner's own operation context) so a
+// tampered delta cannot smuggle a malformed payload past the reducer.
+export function applyDelta(revision, ops, validate) {
+  let next = revision;
+  for (const entry of ops) {
+    const op = validate ? validate({ type: entry.type, payload: entry.payload }, entry.actor) : { type: entry.type, payload: entry.payload };
+    if (!op) return { ok: false, revision };
+    const result = reduce(next, op, entry.actor, {});
+    if (!result.ok) return { ok: false, revision };
+    next = result.revision;
+  }
+  return { ok: true, revision: next };
 }

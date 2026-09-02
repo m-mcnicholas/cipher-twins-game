@@ -9,7 +9,7 @@
 
 import { Room } from "./network.js";
 import { GameHost, GameClient } from "./core/session.js";
-import { createInitialRevision } from "./core/revision.js";
+import { createInitialRevision, snapshot, fromSnapshot } from "./core/revision.js";
 import {
   deriveSalt, commitmentFor, guessIsCorrect, normalizeGuess,
   COMMITMENT_STATUS, COMMITMENT_MESSAGES,
@@ -35,6 +35,8 @@ const state = {
   lastRenderedWordId: null,
   lastAnnouncedMessageId: null,
   lastPhaseKey: null,
+  recovering: null,
+  demo: false,
 };
 
 function showScreen(name) {
@@ -52,6 +54,7 @@ const rev = () => state.host?.revision ?? state.client?.revision ?? null;
 const partnerRole = () => (state.role === "A" ? "B" : "A");
 
 function act(type, payload = {}) {
+  if (state.demo) return; // the scripted demo drives both sides itself
   if (state.host) state.host.dispatchLocal({ type, payload });
   else state.client?.send(type, payload);
 }
@@ -64,8 +67,8 @@ function newClientId() {
 
 // ---- host word selection ------------------------------------------------
 
-function makeHostWordSource() {
-  const used = new Set();
+function makeHostWordSource(alreadyUsed = []) {
+  const used = new Set(alreadyUsed);
   const parByIndex = {};
   let lastCategory = null;
 
@@ -154,9 +157,41 @@ if (location.hash.startsWith("#join=")) {
   if (code) { $("join-code-input").value = code; $("join-code-input").focus(); }
 }
 
-// Same-machine mode: `?local=<CODE>&as=host|join` pairs two tabs through a
-// BroadcastChannel with no PeerJS broker (local playtests and e2e tests).
 const params = new URLSearchParams(location.search);
+const EPHEMERAL_MODE = Boolean(params.get("local") || params.get("demo"));
+const hostNewId = () => `m-${(crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)).slice(0, 20)}`;
+
+// ---- best-effort recovery persistence ------------------------------
+
+const PERSIST_KEY = "cipherTwins:v1";
+
+function persist() {
+  if (EPHEMERAL_MODE || !state.room?.code || !state.role) return;
+  if (rev()?.phase === "complete") { clearPersisted(); return; }
+  try {
+    const record = { code: state.room.code, role: state.role, version: rev()?.version ?? 0 };
+    if (state.host) record.snapshot = snapshot(state.host.revision);
+    sessionStorage.setItem(PERSIST_KEY, JSON.stringify(record));
+  } catch { /* private mode / quota — recovery is best-effort */ }
+}
+
+function clearPersisted() {
+  try { sessionStorage.removeItem(PERSIST_KEY); } catch { /* ignore */ }
+}
+
+function readPersisted() {
+  try {
+    const raw = sessionStorage.getItem(PERSIST_KEY);
+    if (!raw) return null;
+    const record = JSON.parse(raw);
+    if (!record?.code || (record.role !== "A" && record.role !== "B")) return null;
+    if (record.role === "A" && !record.snapshot) return null;
+    return record;
+  } catch { return null; }
+}
+
+// ---- same-machine mode: ?local=<CODE>&as=host|join ------------------
+
 if (params.get("local")) {
   const code = params.get("local").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "LOCALTEST";
   const as = params.get("as") === "join" ? "B" : "A";
@@ -172,45 +207,160 @@ if (params.get("local")) {
       showScreen("error");
     }
   });
+} else if (params.get("demo")) {
+  import("./core/bot-demo.js").then(({ startBotDemo }) => startBotDemo({ state, render, announce, showScreen }));
+} else {
+  const saved = readPersisted();
+  if (saved) {
+    $("resume-panel").hidden = false;
+    $("resume-text").textContent = `You have a game in progress in room ${saved.code} as Player ${saved.role}.`;
+    $("resume-btn").addEventListener("click", () => reconnect(saved));
+    $("resume-discard").addEventListener("click", () => { clearPersisted(); $("resume-panel").hidden = true; });
+  }
 }
+
+// ---- connection wiring --------------------------------------------
 
 function wireRoom() {
   const room = state.room;
   room.addEventListener("connected", ({ detail }) => onConnected(detail));
-  room.addEventListener("peer-left", () => {
-    $("connection-banner").hidden = false;
-    $("connection-banner").textContent = "Your partner disconnected. Your progress is saved on this screen — reload to start a fresh room.";
-    announce("Your partner disconnected.");
+  room.addEventListener("peer-rejoined", () => onPeerRejoined());
+  room.addEventListener("peer-left", () => onPeerLeft());
+  room.addEventListener("error", ({ detail }) => console.error("Room error:", detail?.err));
+}
+
+function buildHost(code, revision) {
+  const knownWordIds = revision
+    ? [revision.wordId, ...revision.archivedTranscripts.map((t) => t.wordId)].filter(Boolean)
+    : [];
+  const { nextWord, pars } = makeHostWordSource(knownWordIds);
+  state.host = new GameHost(state.room, {
+    revision: revision ?? createInitialRevision({
+      roomCode: code,
+      ownershipSeed: crypto.getRandomValues(new Uint8Array(1))[0],
+    }),
+    nextWord, pars, newId: hostNewId,
   });
-  room.addEventListener("error", ({ detail }) => {
-    console.error("Room error:", detail?.err);
+  state.host.addEventListener("revision", () => { persist(); onRevision(); });
+}
+
+function buildClient(code, lastVersion = 0) {
+  state.client = new GameClient(state.room, { role: "B" });
+  state.client.addEventListener("revision", () => { persist(); onRevision(); });
+  state.client.addEventListener("recommit-required", () => {
+    announce("After reconnecting, please enter and commit your guess again.");
+    render();
   });
+  state.client.hello(`sess-${code}-B`, lastVersion);
 }
 
 function onConnected({ role, code }) {
   state.role = role;
   $("role-indicator").textContent = `You are Player ${role}`;
   $("role-indicator").dataset.role = role;
+  hideRecovery();
+  const recovering = state.recovering;
+  state.recovering = null;
+
   if (role === "A") {
-    const { nextWord, pars } = makeHostWordSource();
-    state.host = new GameHost(state.room, {
-      initial: { roomCode: code },
-      revision: createInitialRevision({ roomCode: code, ownershipSeed: crypto.getRandomValues(new Uint8Array(1))[0] }),
-      nextWord, pars,
-      newId: () => `m-${(crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)).slice(0, 20)}`,
-    });
-    state.host.addEventListener("revision", onRevision);
-    state.host.dispatchLocal({ type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } });
+    buildHost(code, recovering ? fromSnapshot(recovering.snapshot) : null);
+    if (recovering) {
+      state.host.recoverPeer();
+      announce("Reconnected. Your game is restored.");
+    } else {
+      state.host.dispatchLocal({ type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } });
+    }
   } else {
-    state.client = new GameClient(state.room, { role: "B" });
-    state.client.addEventListener("revision", onRevision);
-    state.client.addEventListener("recommit-required", () => {
-      announce("After reconnecting, please enter and commit your guess again.");
-      render();
-    });
-    state.client.hello(`sess-${code}-${role}`);
+    buildClient(code, recovering?.version ?? 0);
+  }
+  persist();
+}
+
+function onPeerRejoined() {
+  clearTimeout(recoveryTimer);
+  hideRecovery();
+  $("connection-banner").hidden = false;
+  $("connection-banner").textContent = "Your partner reconnected.";
+  setTimeout(() => { $("connection-banner").hidden = true; }, 4000);
+  announce("Your partner reconnected.");
+  if (state.host) state.host.recoverPeer();
+}
+
+let recoveryTimer = null;
+let joinerRetries = 0;
+
+function onPeerLeft() {
+  $("connection-banner").hidden = false;
+  announce("Your partner disconnected.");
+  clearTimeout(recoveryTimer);
+
+  if (state.host) {
+    $("connection-banner").textContent = `Your partner dropped out. Waiting for them to rejoin room ${state.room.code}…`;
+    recoveryTimer = setTimeout(() => {
+      showRecovery(`Your partner hasn't rejoined room ${state.room.code}. You can keep waiting, or start over.`);
+    }, 30000);
+  } else {
+    $("connection-banner").textContent = "Lost the connection to the host — trying to reconnect…";
+    joinerRetries = 0;
+    state.recovering = readPersisted();
+    retryJoin();
   }
 }
+
+async function retryJoin() {
+  const code = state.room?.code;
+  if (!code) return;
+  joinerRetries += 1;
+  const stale = state.room;
+  try {
+    state.room = new Room();
+    wireRoom();
+    await state.room.join(code);
+    stale?.close?.();
+  } catch (error) {
+    if (joinerRetries < 4) {
+      recoveryTimer = setTimeout(retryJoin, 3000);
+    } else {
+      showRecovery("We can't reach the host. They may have closed the game or lost their connection.");
+    }
+  }
+}
+
+function reconnect(saved) {
+  state.recovering = saved;
+  $("resume-panel").hidden = true;
+  hideRecovery();
+  showScreen("connecting");
+  $("connecting-message").textContent = `Reconnecting to room ${saved.code}…`;
+  state.room = new Room();
+  wireRoom();
+  const attempt = saved.role === "A" ? state.room.host(saved.code) : state.room.join(saved.code);
+  attempt.catch((error) => {
+    showRecovery(`Couldn't rejoin room ${saved.code}: ${error.message}`);
+  });
+}
+
+function showRecovery(text) {
+  clearTimeout(recoveryTimer);
+  $("recovery-text").textContent = text;
+  $("recovery-panel").hidden = false;
+  requestAnimationFrame(() => $("recovery-retry").focus());
+}
+function hideRecovery() {
+  clearTimeout(recoveryTimer);
+  $("recovery-panel").hidden = true;
+}
+
+$("recovery-retry").addEventListener("click", () => {
+  hideRecovery();
+  const saved = readPersisted();
+  if (saved) reconnect(saved);
+  else if (state.host) {
+    $("connection-banner").textContent = `Still hosting room ${state.room.code} — waiting for your partner.`;
+  } else location.reload();
+});
+$("recovery-lobby").addEventListener("click", () => { clearPersisted(); location.href = location.pathname; });
+$("recovery-new").addEventListener("click", () => { clearPersisted(); location.href = location.pathname; });
 
 function onRevision() {
   const r = rev();
@@ -404,7 +554,11 @@ function renderConversation(r) {
     for (const token of message.tokens) tokens.append(tokenChip(token, r));
     item.append(tokens);
 
-    item.setAttribute("aria-label", `Message ${message.seq + 1} from Player ${message.author}: `
+    const replyLabel = message.replyTo != null
+      ? `, replying to message ${(r.messages.find((m) => m.id === message.replyTo)?.seq ?? 0) + 1}`
+      : "";
+    item.setAttribute("aria-label", `Message ${message.seq + 1} from Player ${message.author}`
+      + `${message.author === state.role ? " (you)" : ""}${replyLabel}: `
       + message.tokens.map((t) => t.kind === "icon" ? (ICONS[t.id]?.label ?? t.id) : (r.sigils.confirmed.find((s) => s.id === t.id)?.alias ?? t.id)).join(", "));
 
     const actions = document.createElement("div");
@@ -554,12 +708,30 @@ $("composer-send").addEventListener("click", () => {
   render();
 });
 
-for (const [id, drawer] of [["composer-palette-toggle", "palette-drawer"], ["composer-lexicon-toggle", "lexicon-drawer"]]) {
+const DRAWERS = [["composer-palette-toggle", "palette-drawer"], ["composer-lexicon-toggle", "lexicon-drawer"]];
+for (const [id, drawer] of DRAWERS) {
   $(id).addEventListener("click", () => {
     const el = $(drawer);
-    el.hidden = !el.hidden;
-    $(id).setAttribute("aria-expanded", String(!el.hidden));
+    const opening = el.hidden;
+    // Only one drawer open at a time on narrow screens.
+    for (const [otherId, otherDrawer] of DRAWERS) {
+      if (otherDrawer === drawer) continue;
+      $(otherDrawer).hidden = true;
+      $(otherId).setAttribute("aria-expanded", "false");
+    }
+    el.hidden = !opening;
+    $(id).setAttribute("aria-expanded", String(opening));
+    if (opening) requestAnimationFrame(() => el.querySelector("button, [tabindex]")?.focus());
   });
+}
+
+function closeDrawers(returnFocusToId) {
+  let closedAny = false;
+  for (const [id, drawer] of DRAWERS) {
+    if (!$(drawer).hidden) { $(drawer).hidden = true; $(id).setAttribute("aria-expanded", "false"); closedAny = true; }
+  }
+  if (closedAny && returnFocusToId) $(returnFocusToId)?.focus();
+  return closedAny;
 }
 
 function renderPaletteDrawer(r) {
@@ -720,9 +892,14 @@ document.addEventListener("keydown", (event) => {
   if (!screens.game.hasAttribute("data-active")) return;
   const target = event.target;
   if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+  if (event.key === "Escape") {
+    if (closeDrawers(document.activeElement?.closest(".drawer") ? "composer-palette-toggle" : null)) return;
+    if (state.composer.replyTo != null) { state.composer.replyTo = null; render(); }
+    return;
+  }
+  if (target && (target.tagName === "BUTTON" || target.closest(".drawer") || target.closest(".conversation-list"))) return;
   if (/^[a-zA-Z]$/.test(event.key)) { fillLetter(event.key.toUpperCase()); }
   else if (event.key === "Backspace") { event.preventDefault(); backspaceGuess(); }
-  else if (event.key === "Escape" && state.composer.replyTo != null) { state.composer.replyTo = null; render(); }
 });
 
 function backspaceGuess() {

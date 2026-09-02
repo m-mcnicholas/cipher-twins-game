@@ -18,17 +18,22 @@ export class LocalBridgeRoom extends EventTarget {
   }
 
   async connect() {
-    // Announce presence and wait until the other side has answered.
+    // Either tab may load first, and a BroadcastChannel does not replay
+    // messages sent before a listener existed. So re-announce on an interval
+    // until the other side has answered, rather than relying on a single hello.
     const ready = new Promise((resolve, reject) => {
       this._resolveReady = resolve;
-      this._timer = setTimeout(
-        () => reject(new Error("No partner on this machine joined that local room.")),
-        20000,
-      );
+      this._rejectReady = reject;
     });
+    this._helloTimer = setInterval(() => {
+      if (this._peerSeen) { clearInterval(this._helloTimer); return; }
+      this.channel.postMessage({ __bridge: "hello", from: this.role });
+    }, 200);
+    this._giveUp = setTimeout(() => {
+      clearInterval(this._helloTimer);
+      if (!this._peerSeen) this._rejectReady(new Error("No partner on this machine joined that local room."));
+    }, 20000);
     this.channel.postMessage({ __bridge: "hello", from: this.role });
-    if (this.role === "A") return ready;
-    // Joiner: also accept an immediate ready if the host already said hello.
     return ready;
   }
 
@@ -38,7 +43,12 @@ export class LocalBridgeRoom extends EventTarget {
       if (data.from === this.role) return;
       // Reply so a late arrival also learns we are here.
       this.channel.postMessage({ __bridge: "ack", from: this.role });
-      this._markConnected();
+      if (this._peerSeen) {
+        // The partner's tab reloaded and came back on the same channel.
+        this.dispatchEvent(new CustomEvent("peer-rejoined", { detail: { role: data.from } }));
+      } else {
+        this._markConnected();
+      }
       return;
     }
     if (data.__bridge === "ack") {
@@ -58,7 +68,8 @@ export class LocalBridgeRoom extends EventTarget {
   _markConnected() {
     if (this._peerSeen) return;
     this._peerSeen = true;
-    clearTimeout(this._timer);
+    clearInterval(this._helloTimer);
+    clearTimeout(this._giveUp);
     this._resolveReady?.();
     this.dispatchEvent(new CustomEvent("connected", { detail: { role: this.role, code: this.code } }));
   }

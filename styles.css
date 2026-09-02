@@ -488,6 +488,9 @@ main#app {
 .author-badge { font-weight: 700; }
 .author-badge[data-role="A"] { color: var(--a); }
 .author-badge[data-role="B"] { color: var(--b); }
+/* Non-colour redundancy: a distinct glyph per player. */
+.author-badge[data-role="A"]::before { content: "\25C6\00A0"; }
+.author-badge[data-role="B"]::before { content: "\25CF\00A0"; }
 .message-mine .author-badge::after { content: " (you)"; color: var(--text-dim); font-weight: 400; }
 .message-reply-ref { font-style: italic; }
 .message-tokens { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -593,14 +596,80 @@ main#app {
 
 .reveal-stars { font-size: 2rem; letter-spacing: 0.2em; color: var(--a); margin-bottom: 8px; min-height: 1em; }
 
+.lobby-demo-line { margin: 14px 0 0; color: var(--text-dim); font-size: 0.9rem; }
+
+.resume-panel {
+  border: 1px solid var(--b);
+  background: var(--b-dim);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+}
+.resume-panel p { margin: 0 0 10px; }
+.resume-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.recovery-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(92vw, 460px);
+  padding: 16px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--danger);
+  background: var(--bg-panel-raised);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+}
+.recovery-panel h2 { margin: 0 0 6px; font-family: var(--serif); font-size: 1.1rem; }
+.recovery-panel p { margin: 0 0 14px; color: var(--text-dim); font-size: 0.9rem; }
+.recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.demo-caption {
+  border: 1px solid var(--b);
+  border-left: 3px solid var(--b);
+  background: var(--bg-panel);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+/* Coarse-pointer targets: nothing tappable below ~40px. */
+@media (pointer: coarse) {
+  .micro-button { padding: 8px 12px; font-size: 0.8rem; }
+  .tray-move, .tray-remove { width: 32px; height: 32px; font-size: 1rem; }
+  .filter-btn { padding: 8px 14px; }
+  .letter-tile { min-width: 40px; min-height: 40px; }
+}
+
 @media (max-width: 900px) {
   .game-columns { flex-direction: column; }
   .conversation-section, .composer-section { flex-basis: auto; width: 100%; }
-  .composer-actions { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0; z-index: 2; }
-  .player-view { position: sticky; top: 0; background: var(--bg); padding: 6px 0; z-index: 3; }
+  .conversation-list { max-height: 38vh; }
+  /* Word track stays visible at the top; the composer action bar stays reachable
+     at the bottom while the conversation scrolls between them. */
+  .player-view {
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    padding: 6px 0;
+    z-index: 3;
+    border-bottom: 1px solid var(--border);
+  }
+  .composer-actions {
+    position: sticky;
+    bottom: 0;
+    background: var(--bg);
+    padding: 10px 0;
+    z-index: 2;
+    border-top: 1px solid var(--border);
+  }
+  .drawer { max-height: 50vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 2s; }
-  * { transition: none !important; }
+  * { transition: none !important; animation-duration: 0.001s !important; }
 }

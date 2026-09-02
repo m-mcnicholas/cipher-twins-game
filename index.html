@@ -24,6 +24,13 @@
 
     <!-- LOBBY -->
     <section class="screen" id="screen-lobby" data-active="true" aria-label="Room setup" tabindex="-1">
+      <div class="resume-panel" id="resume-panel" hidden role="group" aria-label="Resume a game">
+        <p id="resume-text"></p>
+        <div class="resume-actions">
+          <button type="button" id="resume-btn" class="primary-button">Reconnect</button>
+          <button type="button" id="resume-discard" class="quiet-button">Discard it</button>
+        </div>
+      </div>
       <div class="lobby-grid">
         <article class="lobby-card">
           <h2>Host a room</h2>
@@ -52,6 +59,8 @@
           <p class="lobby-status" id="join-status" role="status" aria-live="polite"></p>
         </article>
       </div>
+
+      <p class="lobby-demo-line">New here? <a href="?demo=1" id="watch-demo">Watch a 90-second solo demo</a> of the whole loop.</p>
 
       <details class="how-to-play">
         <summary>How this works</summary>
@@ -192,6 +201,17 @@
   </main>
 
   <p class="connection-banner" id="connection-banner" role="status" aria-live="assertive" hidden></p>
+
+  <div class="recovery-panel" id="recovery-panel" role="alertdialog" aria-labelledby="recovery-title" aria-describedby="recovery-text" hidden>
+    <h2 id="recovery-title">Can't reach your partner</h2>
+    <p id="recovery-text"></p>
+    <div class="recovery-actions">
+      <button type="button" id="recovery-retry" class="primary-button">Retry</button>
+      <button type="button" id="recovery-lobby" class="quiet-button">Return to lobby</button>
+      <button type="button" id="recovery-new" class="quiet-button">Start a new room</button>
+    </div>
+  </div>
+
   <p class="visually-hidden" id="sr-live" role="status" aria-live="polite"></p>
 </body>
 </html>
