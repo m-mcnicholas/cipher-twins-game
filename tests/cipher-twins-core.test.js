@@ -48,8 +48,10 @@ function advanceToPuzzle(index, over = {}) {
   let rev = createInitialRevision({ roomCode: "ROOMAAA", ownershipSeed: 0 });
   const c = ctx(over);
   rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
-  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "tutorial", fromIndex: 0 } }, "A", c).revision;
-  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "tutorial", fromIndex: 1 } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
   for (let i = 0; i < index; i += 1) {
     // force a solve so advance is permitted
     rev.phase = "reveal";
@@ -321,8 +323,17 @@ test("advance is idempotent and only leaves a reveal once the puzzle is solved",
   const stale = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "B", c);
   assert.equal(stale.revision.version, rev.version);
 
-  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "tutorial", fromIndex: 0 } }, "A", c).revision;
-  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "tutorial", fromIndex: 1 } }, "A", c).revision;
+  // level:advance no longer handles the tutorial phase — only a mutual
+  // tutorial:readyVote can move it. The op is silently ignored, not an error.
+  const ignored = reduce(rev, { type: "level:advance", payload: { fromPhase: "tutorial", fromIndex: 0 } }, "A", c);
+  assert.equal(ignored.revision.version, rev.version);
+  assert.equal(ignored.revision.phase, "tutorial");
+
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
+  assert.equal(rev.tutorialIndex, 0, "one confirmation is not enough");
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
   assert.equal(rev.phase, "puzzle");
   assert.equal(rev.puzzleIndex, 0);
 
@@ -377,6 +388,16 @@ test("a unanimous skip vote jumps straight to the first puzzle", () => {
   rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
   assert.equal(rev.phase, "puzzle");
   assert.equal(rev.puzzleIndex, 0);
+});
+
+test("both players must confirm a tutorial step before it advances", () => {
+  let rev = createInitialRevision();
+  const c = ctx();
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
+  assert.equal(rev.tutorialIndex, 0, "one confirmation is not enough");
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.tutorialIndex, 1);
 });
 
 test("keep-lexicon rematch retains sigils, archives, and opens the full palette", () => {

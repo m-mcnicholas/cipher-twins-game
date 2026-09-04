@@ -30,7 +30,7 @@ export const OPERATION_TYPES = Object.freeze([
   "message:send", "message:retract",
   "sigil:propose", "sigil:confirm", "sigil:reject",
   "guess:commit", "guess:retractCommit",
-  "tutorial:skipVote",
+  "tutorial:skipVote", "tutorial:readyVote",
   "level:advance", "level:retry", "session:rematch",
   "presence:update",
   "session:hello", "sync:request",
@@ -110,7 +110,8 @@ export function validateOperation(message, context) {
     case "level:retry": {
       return { type, payload: {} };
     }
-    case "tutorial:skipVote": {
+    case "tutorial:skipVote":
+    case "tutorial:readyVote": {
       if (!isBool(p.vote)) return null;
       return { type, payload: { vote: p.vote } };
     }

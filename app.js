@@ -434,6 +434,7 @@ function render() {
 function renderTopbar(r) {
   const isTut = r.phase === "tutorial";
   $("round-label").textContent = isTut ? "Tutorial" : "Puzzle";
+  $("round-label").classList.toggle("round-label-tutorial", isTut);
   $("round-number").textContent = isTut ? `${r.tutorialIndex + 1} / 2` : `${r.puzzleIndex + 1} / 7`;
   const total = Object.values(r.stars).reduce((a, b) => a + b, 0);
   $("stars-indicator").textContent = total ? `★ ${total}` : "";
@@ -444,16 +445,22 @@ function renderTutorialBanner(r) {
   if (r.phase !== "tutorial") { banner.hidden = true; return; }
   banner.hidden = false;
   $("tutorial-text").textContent = TUTORIAL_TEXT[r.tutorialIndex] ?? "";
+  const myReady = r.tutorialReadyVotes?.[state.role];
+  const theirReady = r.tutorialReadyVotes?.[partnerRole()];
   const mine = r.tutorialSkipVotes?.[state.role];
   const theirs = r.tutorialSkipVotes?.[partnerRole()];
-  $("tutorial-skip-note").textContent = mine && !theirs ? "Waiting for your partner to also agree to skip…"
+  $("tutorial-skip-note").textContent =
+    myReady && !theirReady ? "Waiting for your partner to also say they've got it…"
+    : !myReady && theirReady ? "Your partner says they've got it — continue when you're ready."
+    : mine && !theirs ? "Waiting for your partner to also agree to skip…"
     : !mine && theirs ? "Your partner wants to skip the tutorials."
-      : "";
+    : "";
+  $("tutorial-next").textContent = myReady ? "Waiting for partner…" : "I've got it — continue";
 }
 
 $("tutorial-next").addEventListener("click", () => {
   const r = rev();
-  act("level:advance", { fromPhase: "tutorial", fromIndex: r.tutorialIndex });
+  act("tutorial:readyVote", { vote: !r.tutorialReadyVotes?.[state.role] });
 });
 $("tutorial-skip").addEventListener("click", () => {
   const r = rev();
@@ -513,6 +520,7 @@ function tokenChip(token, r) {
 function renderConversation(r) {
   if (!r) return;
   const list = $("conversation-list");
+  const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   list.replaceChildren();
   const visible = r.messages.filter((m) => {
     if (state.filter === "mine") return m.author === state.role;
@@ -565,8 +573,8 @@ function renderConversation(r) {
     actions.className = "message-actions";
     const replyBtn = document.createElement("button");
     replyBtn.type = "button";
-    replyBtn.className = "micro-button";
-    replyBtn.textContent = "Reply";
+    replyBtn.className = "micro-button micro-reply";
+    replyBtn.textContent = "↳ Reply";
     replyBtn.addEventListener("click", () => { state.composer.replyTo = message.id; render(); });
     actions.append(replyBtn);
     if (message.author === state.role) {
@@ -590,12 +598,30 @@ function renderConversation(r) {
   }
 
   const newest = r.messages.at(-1);
+  if (!r.messages.length) $("new-message-pill").hidden = true;
   if (newest && newest.id !== state.lastAnnouncedMessageId) {
     state.lastAnnouncedMessageId = newest.id;
     if (newest.author !== state.role) announce(`Player ${newest.author} sent message ${newest.seq + 1}.`);
-    list.scrollTop = list.scrollHeight;
+    if (wasNearBottom) {
+      list.scrollTop = list.scrollHeight;
+      $("new-message-pill").hidden = true;
+    } else {
+      $("new-message-pill").hidden = false;
+    }
   }
 }
+
+$("new-message-pill").addEventListener("click", () => {
+  const list = $("conversation-list");
+  list.scrollTop = list.scrollHeight;
+  $("new-message-pill").hidden = true;
+});
+$("conversation-list").addEventListener("scroll", () => {
+  const list = $("conversation-list");
+  if (!$("new-message-pill").hidden && list.scrollHeight - list.scrollTop - list.clientHeight < 40) {
+    $("new-message-pill").hidden = true;
+  }
+});
 
 function sameTokens(a, b) {
   return a.length === b.length && a.every((t, i) => t.kind === b[i].kind && t.id === b[i].id);
@@ -671,7 +697,7 @@ function renderComposer(r) {
   if (state.composer.replyTo != null) {
     const seq = r.messages.find((m) => m.id === state.composer.replyTo)?.seq;
     replyChip.hidden = false;
-    replyChip.textContent = seq == null ? "Replying to a message" : `Replying to #${seq + 1}`;
+    replyChip.textContent = seq == null ? "↳ Replying to a message" : `↳ Replying to #${seq + 1}`;
     const clear = document.createElement("button");
     clear.type = "button"; clear.className = "micro-button"; clear.textContent = "✕";
     clear.addEventListener("click", () => { state.composer.replyTo = null; render(); });
@@ -843,9 +869,12 @@ function renderAnswer(r) {
   if (state.myGuess.length !== r.wordLength) state.myGuess = Array(r.wordLength).fill(null);
   const bar = $("answer-bar");
   bar.replaceChildren();
+  const committed = r.commitments?.[state.role] != null;
+  const nextEmpty = state.myGuess.indexOf(null);
   state.myGuess.forEach((letter, index) => {
     const slot = document.createElement("span");
-    slot.className = `answer-slot${letter ? " filled" : ""}`;
+    const isCurrent = !committed && index === nextEmpty;
+    slot.className = `answer-slot${letter ? " filled" : ""}${isCurrent ? " current" : ""}`;
     slot.textContent = letter ?? "";
     slot.setAttribute("aria-label", `Guess position ${index + 1}${letter ? `, ${letter}` : ", empty"}`);
     bar.append(slot);
@@ -909,6 +938,8 @@ function backspaceGuess() {
   if (index >= 0) state.myGuess[index] = null;
   renderAnswer(r);
 }
+
+$("answer-bar").addEventListener("click", () => $("answer-bar").focus());
 
 $("answer-backspace").addEventListener("click", backspaceGuess);
 $("answer-clear").addEventListener("click", () => {

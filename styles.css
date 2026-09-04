@@ -11,6 +11,8 @@
   --b-dim: #5fd0c033;
   --danger: #e8677a;
   --success: #6fd08c;
+  --tut: #9b8cf2;
+  --tut-dim: #9b8cf233;
   --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
   color-scheme: dark;
@@ -346,6 +348,16 @@ main#app {
   font-weight: 700;
 }
 .answer-slot.filled { border-color: var(--a); color: var(--a); background: var(--a-dim); }
+.answer-slot.current { border-color: var(--b); box-shadow: 0 0 0 2px var(--b-dim); }
+.answer-slot.current:empty::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  background: var(--b);
+  animation: caret-blink 1s step-end infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
 
 .letter-picker {
   display: grid;
@@ -415,14 +427,15 @@ main#app {
 
 .round-indicator { font-family: var(--serif); font-size: 1.1rem; }
 .round-label { color: var(--b); font-weight: 700; }
+.round-label-tutorial { color: var(--tut); }
 .stars-indicator { margin-left: auto; color: var(--a); font-weight: 700; font-size: 0.9rem; }
 .role-indicator[data-role="A"] { color: var(--a); }
 .role-indicator[data-role="B"] { color: var(--b); }
 
 .tutorial-banner {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--b);
-  background: var(--bg-panel);
+  border: 1px solid var(--tut);
+  border-left: 3px solid var(--tut);
+  background: var(--tut-dim);
   border-radius: 10px;
   padding: 14px 16px;
   margin-bottom: 18px;
@@ -442,7 +455,24 @@ main#app {
 }
 
 .game-columns { display: flex; gap: 18px; margin-bottom: 22px; align-items: flex-start; }
-.conversation-section { flex: 1 1 55%; min-width: 0; }
+.conversation-section { flex: 1 1 55%; min-width: 0; position: relative; }
+
+.new-message-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.new-message-pill:hover { border-color: var(--text-dim); }
 .composer-section { flex: 1 1 45%; min-width: 0; }
 
 .conversation-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
@@ -460,13 +490,25 @@ main#app {
 }
 .filter-btn[aria-pressed="true"] { background: var(--bg-panel-raised); color: var(--text); border-color: var(--text-dim); }
 
+.conversation-list, .drawer {
+  background-color: var(--bg-panel);
+  background-repeat: no-repeat;
+  background-position: top, bottom, top, bottom;
+  background-size: 100% 40px, 100% 40px, 100% 14px, 100% 14px;
+  background-attachment: local, local, scroll, scroll;
+  background-image:
+    linear-gradient(var(--bg-panel) 30%, transparent),
+    linear-gradient(transparent, var(--bg-panel) 70%),
+    linear-gradient(rgba(0, 0, 0, 0.45), transparent),
+    linear-gradient(transparent, rgba(0, 0, 0, 0.45));
+}
+
 .conversation-list {
   list-style: none;
   margin: 0;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg-panel);
   min-height: 160px;
   max-height: 46vh;
   overflow-y: auto;
@@ -492,7 +534,17 @@ main#app {
 .author-badge[data-role="A"]::before { content: "\25C6\00A0"; }
 .author-badge[data-role="B"]::before { content: "\25CF\00A0"; }
 .message-mine .author-badge::after { content: " (you)"; color: var(--text-dim); font-weight: 400; }
-.message-reply-ref { font-style: italic; }
+.message-reply-ref {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
 .message-tokens { display: flex; flex-wrap: wrap; gap: 6px; }
 .message-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 
@@ -523,6 +575,7 @@ main#app {
 }
 .micro-button:hover { color: var(--text); border-color: var(--text-dim); }
 .micro-danger:hover { color: var(--danger); border-color: var(--danger); }
+.micro-reply:hover { color: var(--b); border-color: var(--b); }
 
 .archive-details { margin-top: 12px; font-size: 0.84rem; color: var(--text-dim); }
 .archive-details summary { cursor: pointer; }
@@ -536,8 +589,8 @@ main#app {
   gap: 6px;
   padding: 3px 10px;
   border-radius: 999px;
-  background: var(--b-dim);
-  border: 1px solid var(--b);
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border);
   color: var(--text);
   font-size: 0.78rem;
   margin: 0 0 8px;
@@ -577,7 +630,6 @@ main#app {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg-panel);
   max-height: 40vh;
   overflow-y: auto;
 }

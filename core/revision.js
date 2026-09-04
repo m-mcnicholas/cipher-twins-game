@@ -41,6 +41,7 @@ export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } 
     ownershipSeed: seed,
     tutorialIndex: 0,
     tutorialSkipVotes: { A: false, B: false },
+    tutorialReadyVotes: { A: false, B: false },
     puzzleIndex: -1,
     wordId: null,
     wordLength: 0,
@@ -289,21 +290,12 @@ export function reduce(revision, op, actor, context = {}) {
       return ok(bumped(next), [{ type: "skipVote", role: actor, vote: p.vote }]);
     }
 
-    case "level:advance": {
-      const positionMatches =
-        p.fromPhase === revision.phase &&
-        (p.fromIndex == null ||
-          (revision.phase === "tutorial" && p.fromIndex === revision.tutorialIndex) ||
-          ((revision.phase === "reveal" || revision.phase === "puzzle") && p.fromIndex === revision.puzzleIndex) ||
-          revision.phase === "lobby" || revision.phase === "complete");
-      if (!positionMatches) return ok(revision, [{ type: "advanceIgnored" }]);
-
+    case "tutorial:readyVote": {
+      if (revision.phase !== "tutorial") return fail(revision, "There is nothing to confirm right now.");
       const next = structuredClone(revision);
-      if (revision.phase === "lobby") {
-        beginRound(next, { tutorial: true, index: 0, context });
-        return ok(bumped(next), [{ type: "phase", phase: "tutorial", tutorialIndex: 0 }]);
-      }
-      if (revision.phase === "tutorial") {
+      next.tutorialReadyVotes[actor] = p.vote;
+      if (next.tutorialReadyVotes.A && next.tutorialReadyVotes.B) {
+        next.tutorialReadyVotes = { A: false, B: false };
         if (next.messages.length) archiveCurrentRound(next);
         if (next.tutorialIndex + 1 < TUTORIAL_COUNT) {
           beginRound(next, { tutorial: true, index: next.tutorialIndex + 1, context });
@@ -312,6 +304,22 @@ export function reduce(revision, op, actor, context = {}) {
         next.tutorialIndex = TUTORIAL_COUNT;
         beginRound(next, { tutorial: false, index: 0, context });
         return ok(bumped(next), [{ type: "phase", phase: "puzzle", puzzleIndex: 0 }]);
+      }
+      return ok(bumped(next), [{ type: "readyVote", role: actor, vote: p.vote }]);
+    }
+
+    case "level:advance": {
+      const positionMatches =
+        p.fromPhase === revision.phase &&
+        (p.fromIndex == null ||
+          ((revision.phase === "reveal" || revision.phase === "puzzle") && p.fromIndex === revision.puzzleIndex) ||
+          revision.phase === "lobby" || revision.phase === "complete");
+      if (!positionMatches) return ok(revision, [{ type: "advanceIgnored" }]);
+
+      const next = structuredClone(revision);
+      if (revision.phase === "lobby") {
+        beginRound(next, { tutorial: true, index: 0, context });
+        return ok(bumped(next), [{ type: "phase", phase: "tutorial", tutorialIndex: 0 }]);
       }
       if (revision.phase === "reveal") {
         const solved = next.lastOutcome
@@ -351,6 +359,7 @@ export function reduce(revision, op, actor, context = {}) {
       next.runNumber += 1;
       next.tutorialIndex = TUTORIAL_COUNT;
       next.tutorialSkipVotes = { A: false, B: false };
+      next.tutorialReadyVotes = { A: false, B: false };
       next.attempts = {};
       next.stars = {};
       next.commitments = { A: null, B: null };

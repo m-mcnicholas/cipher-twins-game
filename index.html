@@ -120,6 +120,7 @@
             </div>
           </div>
           <ol class="conversation-list" id="conversation-list" aria-live="polite"></ol>
+          <button type="button" class="new-message-pill" id="new-message-pill" hidden>↳ New message</button>
           <details class="archive-details" id="archive-details" hidden>
             <summary>Earlier rounds</summary>
             <div id="archive-body"></div>
@@ -148,7 +149,7 @@
       <section class="answer-section" aria-label="Your private guess">
         <h2>Your private guess</h2>
         <p class="answer-hint">Only a fingerprint of this is sent. Your letters and your guess never leave this device.</p>
-        <div class="answer-bar" id="answer-bar"></div>
+        <div class="answer-bar" id="answer-bar" tabindex="0" role="group" aria-label="Your guess"></div>
         <div class="letter-picker" id="letter-picker"></div>
         <div class="answer-actions">
           <button type="button" id="answer-backspace" class="quiet-button">Backspace</button>
