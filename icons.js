@@ -80,3 +80,28 @@ export function renderIcon(id) {
   if (!icon) throw new Error(`Unknown icon: ${id}`);
   return icon.render();
 }
+
+// Abstract marks a saved sigil can wear (chosen by core/sigil-identity.js from
+// the icons it stands for). Deliberately non-alphabetic — they name a shared
+// idea without spelling anything. Keep the count in sync with
+// SIGIL_GLYPH_COUNT in core/sigil-identity.js.
+const SIGIL_GLYPHS = [
+  '<circle cx="12" cy="12" r="7" /><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />',
+  '<path d="M12 3 L21 20 L3 20 Z" />',
+  '<path d="M4 12 h16 M12 4 v16" /><circle cx="12" cy="12" r="6" />',
+  '<path d="M6 6 L18 18 M18 6 L6 18" /><rect x="7" y="7" width="10" height="10" rx="2" />',
+  '<path d="M12 3 L15 9 L21 12 L15 15 L12 21 L9 15 L3 12 L9 9 Z" />',
+  '<path d="M5 19 Q12 3 19 19" /><line x1="5" y1="19" x2="19" y2="19" />',
+  '<circle cx="8" cy="12" r="4.5" /><circle cx="16" cy="12" r="4.5" />',
+  '<path d="M12 3 v18 M6 7 h12 M6 17 h12" />',
+  '<path d="M4 15 Q12 -2 20 15" stroke-width="2" /><circle cx="12" cy="15" r="2.4" fill="currentColor" stroke="none" />',
+  '<rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)" />',
+  '<path d="M12 4 C6 8 6 16 12 20 C18 16 18 8 12 4 Z" />',
+  '<path d="M4 12 h16 M9 7 l-5 5 5 5 M15 7 l5 5 -5 5" />',
+];
+
+export function renderSigilGlyph(index) {
+  return svg(SIGIL_GLYPHS[((index % SIGIL_GLYPHS.length) + SIGIL_GLYPHS.length) % SIGIL_GLYPHS.length]);
+}
+
+export { SIGIL_GLYPHS };

@@ -12,6 +12,7 @@ import {
   ownershipForPuzzle, positionsForParity,
 } from "../core/palette.js";
 import { computeStars, scorePuzzle, countTokens, expandedTokenCount } from "../core/scoring.js";
+import { identityFor, tokenSignature, SIGIL_GLYPH_COUNT } from "../core/sigil-identity.js";
 import {
   validateOperation, validateBroadcast, containsForbiddenKey,
 } from "../core/messages.js";
@@ -200,6 +201,58 @@ test("roundStats resets when a new round begins", () => {
   assert.deepEqual(rev.roundStats, {
     messagesSent: 0, tokensRaw: 0, tokensExpanded: 0, byAuthor: { A: 0, B: 0 }, sigilReuses: 0, firstTryAgree: null,
   });
+});
+
+// ------------------------------------------------------ sigil identity
+
+test("a sigil's look is a pure, stable function of the icons it stands for", () => {
+  const a = [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }];
+  const b = [{ kind: "icon", id: "count:2" }, { kind: "icon", id: "shape:loop" }]; // order matters
+  assert.deepEqual(identityFor(a), identityFor(a), "deterministic");
+  assert.notDeepEqual(identityFor(a), identityFor(b), "reordered icons read as a different sigil");
+  const id = identityFor(a);
+  assert.ok(id.glyphIndex >= 0 && id.glyphIndex < SIGIL_GLYPH_COUNT);
+  assert.ok(id.hue >= 0 && id.hue < 360);
+  assert.equal(tokenSignature(a), "icon:shape:loop|icon:count:2");
+
+  // reasonable spread: many distinct sequences do not all collapse to one glyph
+  const glyphs = new Set();
+  for (let i = 0; i < 60; i += 1) {
+    glyphs.add(identityFor([{ kind: "icon", id: `x:${i}` }, { kind: "icon", id: "y:1" }]).glyphIndex);
+  }
+  assert.ok(glyphs.size >= 6, `saw ${glyphs.size} distinct glyphs across 60 sequences`);
+});
+
+test("sigilUses counts reuse in a card, not proposing or confirming, and survives a new round", () => {
+  const { rev: start, c } = advanceToPuzzle(0);
+  let rev = reduce(start, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-2", sourceMessageId: rev.messages[0].id } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: "sigil-1" } }, "B", c).revision;
+  assert.deepEqual(rev.sigilUses, {}, "confirming a sigil is not a use");
+
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "B-1", tokens: [{ kind: "sigil", id: "sigil-1" }, { kind: "sigil", id: "sigil-1" }] }, }, "B", c).revision;
+  assert.equal(rev.sigilUses["sigil-1"], 2, "two sigil tokens in one card count twice");
+
+  // advancing to the next puzzle keeps the cumulative count
+  rev.phase = "reveal";
+  rev.lastOutcome = { status: COMMITMENT_STATUS.SOLVED, puzzleIndex: 0, attempt: 1, agree: true };
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "reveal", fromIndex: 0 } }, "A", c).revision;
+  assert.equal(rev.sigilUses["sigil-1"], 2, "sigilUses is cumulative across the run");
+  assert.equal(rev.roundStats.sigilReuses, 0, "but the per-round reuse counter reset");
+});
+
+test("a fresh rematch wipes sigilUses; keeping the lexicon preserves it", () => {
+  let rev = createInitialRevision();
+  rev.phase = "complete";
+  rev.sigils.confirmed = [{ id: "sigil-1", alias: "Sigil 1", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], proposedBy: "A", confirmedBy: "B" }];
+  rev.sigilUses = { "sigil-1": 5 };
+  const c = ctx();
+
+  const kept = reduce(rev, { type: "session:rematch", payload: { keepLexicon: true } }, "A", c).revision;
+  assert.equal(kept.sigilUses["sigil-1"], 5, "kept language keeps its history");
+
+  const fresh = reduce(rev, { type: "session:rematch", payload: { keepLexicon: false } }, "A", c).revision;
+  assert.deepEqual(fresh.sigilUses, {}, "fresh start clears it");
 });
 
 // ------------------------------------------------------ protocol schemas

@@ -66,6 +66,7 @@ export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } 
     ownership: ownershipForPuzzle(seed, 0),
     unlockedPalette: [...TUTORIAL_PALETTE],
     sigilCounter: 0,
+    sigilUses: {},        // sigilId -> times dropped into a card, cumulative across the run
     messages: [],
     roundStats: emptyRoundStats(),
     archivedTranscripts: [],
@@ -189,6 +190,10 @@ export function reduce(revision, op, actor, context = {}) {
       stats.tokensRaw += p.tokens.length;
       stats.tokensExpanded += expandedTokenCount(p.tokens, next.sigils.confirmed);
       stats.sigilReuses += p.tokens.filter((t) => t.kind === "sigil").length;
+      if (!next.sigilUses) next.sigilUses = {};
+      for (const t of p.tokens) {
+        if (t.kind === "sigil") next.sigilUses[t.id] = (next.sigilUses[t.id] ?? 0) + 1;
+      }
       recordClientId(next, p.clientId);
       return ok(bumped(next), [{ type: "message", id, author: actor }]);
     }
@@ -410,9 +415,11 @@ export function reduce(revision, op, actor, context = {}) {
       next.lastOutcome = null;
       if (p.keepLexicon) {
         next.sigils.pending = [];
+        // sigilUses carries over: the point of a kept lexicon is its history.
       } else {
         next.sigils = { confirmed: [], pending: [] };
         next.sigilCounter = 0;
+        next.sigilUses = {};
         next.archivedTranscripts = [];
       }
       beginRound(next, { tutorial: false, index: 0, context });

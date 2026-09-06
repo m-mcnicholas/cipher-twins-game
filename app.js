@@ -15,7 +15,8 @@ import {
   deriveSalt, commitmentFor, guessIsCorrect, normalizeGuess,
   COMMITMENT_STATUS, COMMITMENT_MESSAGES,
 } from "./core/commitments.js";
-import { ICONS, ICON_GROUPS, renderIcon } from "./icons.js";
+import { ICONS, ICON_GROUPS, renderIcon, renderSigilGlyph } from "./icons.js";
+import { identityFor } from "./core/sigil-identity.js";
 import { ACTIVE_WORDS, TIER_LENGTHS } from "./words/bank.js";
 
 const $ = (id) => document.getElementById(id);
@@ -584,9 +585,19 @@ function tokenChip(token, r) {
     chip.title = icon?.label ?? token.id;
   } else {
     const sigil = r.sigils.confirmed.find((s) => s.id === token.id);
-    chip.textContent = sigil?.alias ?? token.id;
-    chip.setAttribute("aria-label", `${sigil?.alias ?? token.id}${sigil ? `, ${sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" then ")}` : ""}`);
-    if (sigil) chip.title = sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ");
+    const meaning = sigil ? sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ") : "";
+    if (sigil) {
+      const id = identityFor(sigil.tokens);
+      chip.style.setProperty("--sigil-hue", String(id.hue));
+      const badge = document.createElement("span");
+      badge.className = "sigil-badge";
+      badge.innerHTML = renderSigilGlyph(id.glyphIndex);
+      chip.append(badge, document.createTextNode(sigil.alias));
+    } else {
+      chip.textContent = token.id;
+    }
+    chip.setAttribute("aria-label", `${sigil?.alias ?? token.id}${meaning ? `, meaning ${meaning}` : ""}`);
+    if (sigil) chip.title = `${sigil.alias}: ${meaning}`;
   }
   return chip;
 }
@@ -881,9 +892,21 @@ function renderLexicon(r) {
   for (const sigil of r.sigils.confirmed) {
     const wrap = document.createElement("div");
     wrap.className = "sigil-row";
+    const ident = identityFor(sigil.tokens);
+    wrap.style.setProperty("--sigil-hue", String(ident.hue));
     const label = document.createElement("span");
     label.className = "sigil-alias";
-    label.textContent = sigil.alias;
+    const badge = document.createElement("span");
+    badge.className = "sigil-badge";
+    badge.innerHTML = renderSigilGlyph(ident.glyphIndex);
+    label.append(badge, document.createTextNode(sigil.alias));
+    const uses = r.sigilUses?.[sigil.id] ?? 0;
+    if (uses > 0) {
+      const tally = document.createElement("span");
+      tally.className = "sigil-uses";
+      tally.textContent = `used ${uses}×`;
+      label.append(" ", tally);
+    }
     const preview = document.createElement("span");
     preview.className = "sigil-preview";
     for (const token of sigil.tokens) preview.append(tokenChip(token, r));
@@ -1140,9 +1163,62 @@ $("reveal-retry").addEventListener("click", () => {
 
 function renderComplete(r) {
   const total = Object.values(r.stars).reduce((a, b) => a + b, 0);
-  $("complete-stars").textContent = "★".repeat(Math.min(total, 21));
-  $("complete-score").textContent = `${total} / 21 stars`;
-  announce(`All puzzles complete. ${total} of 21 stars.`);
+  const max = PUZZLE_COUNT * 3;
+  $("complete-stars").textContent = "★".repeat(Math.min(total, max));
+  $("complete-score").textContent = `${total} / ${max} stars`;
+  renderLexiconRecap(r);
+  announce(`All puzzles complete. ${total} of ${max} stars.`);
+}
+
+// The end-screen celebration of the shared language: what the pair coined and
+// how much they leaned on it. Makes "keep our language" a real choice.
+function renderLexiconRecap(r) {
+  const box = $("lexicon-recap");
+  if (!box) return;
+  box.replaceChildren();
+  const sigils = r.sigils?.confirmed ?? [];
+  if (!sigils.length) {
+    box.hidden = true;
+    return;
+  }
+  const uses = r.sigilUses ?? {};
+  const totalReuse = sigils.reduce((sum, s) => sum + (uses[s.id] ?? 0), 0);
+  const top = sigils.reduce((best, s) => ((uses[s.id] ?? 0) > (uses[best?.id] ?? -1) ? s : best), null);
+
+  const head = document.createElement("h3");
+  head.textContent = `Your language — ${sigils.length} sigil${sigils.length === 1 ? "" : "s"}, used ${totalReuse}×`;
+  box.append(head);
+
+  const list = document.createElement("ul");
+  list.className = "lexicon-recap-list";
+  for (const sigil of sigils) {
+    const ident = identityFor(sigil.tokens);
+    const li = document.createElement("li");
+    li.style.setProperty("--sigil-hue", String(ident.hue));
+    const badge = document.createElement("span");
+    badge.className = "sigil-badge";
+    badge.innerHTML = renderSigilGlyph(ident.glyphIndex);
+    const name = document.createElement("span");
+    name.className = "sigil-alias";
+    name.textContent = sigil.alias;
+    const meaning = document.createElement("span");
+    meaning.className = "lexicon-recap-meaning";
+    meaning.textContent = sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ");
+    const count = document.createElement("span");
+    count.className = "sigil-uses";
+    count.textContent = `${uses[sigil.id] ?? 0}×`;
+    li.append(badge, name, meaning, count);
+    list.append(li);
+  }
+  box.append(list);
+
+  if (top && (uses[top.id] ?? 0) > 0) {
+    const fav = document.createElement("p");
+    fav.className = "lexicon-recap-fav";
+    fav.textContent = `Most used: ${top.alias} (${uses[top.id]}×) — ${top.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ")}`;
+    box.append(fav);
+  }
+  box.hidden = false;
 }
 
 $("rematch-keep").addEventListener("click", () => act("session:rematch", { keepLexicon: true }));
