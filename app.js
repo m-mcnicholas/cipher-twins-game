@@ -968,19 +968,53 @@ $("answer-retract").addEventListener("click", () => act("guess:retractCommit", {
 
 function starString(count) { return "★★★".slice(0, count) + "☆☆☆".slice(0, 3 - count); }
 
+// A ratio of "used / par", or just the used count when the par is unknown.
+function vsPar(used, par) {
+  return Number.isFinite(par) ? `${used} / ${par}` : String(used);
+}
+
+// Fills the reveal scorecard <dl> so a star result is legible: what the pair
+// spent against par, and which attempt solved it. Pars/totals come straight
+// from the reducer's ledger via lastOutcome (WP-0).
+function fillScorecard(outcome) {
+  const dl = $("reveal-scorecard");
+  dl.replaceChildren();
+  const haveNumbers = Number.isFinite(outcome.tokens) && Number.isFinite(outcome.messages);
+  if (!haveNumbers) { dl.hidden = true; return; }
+  const rows = [
+    ["Tokens sent", vsPar(outcome.tokens, outcome.parTokens)],
+    ["Cards sent", vsPar(outcome.messages, outcome.parMessages)],
+    ["Solved on", `attempt ${outcome.attempt}`],
+  ];
+  for (const [term, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    dl.append(dt, dd);
+  }
+  dl.hidden = false;
+}
+
 function renderReveal(r) {
   const outcome = r.lastOutcome ?? {};
   const solved = outcome.status === COMMITMENT_STATUS.SOLVED;
   $("reveal-stars").textContent = solved ? starString(r.stars[r.puzzleIndex] ?? 1) : "";
   if (solved) {
+    const stars = r.stars[r.puzzleIndex] ?? 1;
     $("reveal-kicker").textContent = "Solved";
     $("reveal-word").textContent = `Puzzle ${r.puzzleIndex + 1} down`;
-    const stars = r.stars[r.puzzleIndex] ?? 1;
-    $("reveal-detail").textContent = `${stars} star${stars === 1 ? "" : "s"} · ${outcome.attempt} attempt${outcome.attempt === 1 ? "" : "s"}.`;
+    $("reveal-detail").textContent =
+      `${stars} star${stars === 1 ? "" : "s"} · solved on attempt ${outcome.attempt}.`;
+    fillScorecard(outcome);
     $("reveal-next").hidden = false;
     $("reveal-retry").hidden = true;
-    announce(`Solved. ${stars} stars.`);
+    const scoreSpoken = Number.isFinite(outcome.tokens)
+      ? ` ${outcome.tokens} tokens${Number.isFinite(outcome.parTokens) ? ` against a par of ${outcome.parTokens}` : ""}, ${outcome.messages} cards.`
+      : "";
+    announce(`Solved. ${stars} stars.${scoreSpoken}`);
   } else {
+    $("reveal-scorecard").hidden = true;
     $("reveal-kicker").textContent = outcome.status === COMMITMENT_STATUS.AGREED_WRONG ? "Agreed — but not the answer" : "Not aligned yet";
     $("reveal-word").textContent = "";
     $("reveal-detail").textContent = COMMITMENT_MESSAGES[outcome.status] ?? "Try again.";

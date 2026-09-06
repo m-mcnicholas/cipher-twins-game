@@ -331,6 +331,13 @@ test("an attempt counts once, when both commitments have resolved", () => {
   assert.equal(rev.phase, "reveal");
   assert.equal(rev.lastOutcome.status, COMMITMENT_STATUS.SOLVED);
   assert.equal(rev.stars[pi], 3);
+  // the reveal screen (WP-2) reads its scorecard straight off lastOutcome
+  assert.equal(rev.lastOutcome.tokens, 0);
+  assert.equal(rev.lastOutcome.messages, 0);
+  assert.equal(rev.lastOutcome.parTokens, 20);
+  assert.equal(rev.lastOutcome.parMessages, 8);
+  assert.equal(rev.lastOutcome.stars, 3);
+  assert.equal(rev.lastOutcome.breakdown.withinPar, true);
   assert.deepEqual(rev.commitments, { A: null, B: null }, "commitments are cleared after resolving");
 });
 

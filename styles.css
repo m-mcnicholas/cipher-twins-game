@@ -404,6 +404,17 @@ main#app {
   letter-spacing: 0.06em;
 }
 .reveal-detail { margin: 0 0 20px; color: var(--text-dim); }
+.reveal-scorecard {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: center;
+  column-gap: 18px;
+  row-gap: 4px;
+  margin: 0 0 22px;
+  font-size: 0.9rem;
+}
+.reveal-scorecard dt { color: var(--text-dim); text-align: right; }
+.reveal-scorecard dd { margin: 0; text-align: left; font-variant-numeric: tabular-nums; }
 .reveal-actions { display: flex; justify-content: center; gap: 12px; }
 
 .connection-banner {
