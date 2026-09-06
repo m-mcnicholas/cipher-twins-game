@@ -13,13 +13,16 @@
 //   - a sigil needs its proposer plus one confirmation from the *other* role
 //   - the palette only ever grows
 //   - an attempt is counted once, when both commitments have resolved
+//   - the per-round scoring ledger (`roundStats`) is append-only: retracting a
+//     card removes it from the transcript but never from the ledger, so stars
+//     are computed from what was actually communicated
 //   - no plaintext guess or private letter is ever stored (enforced by snapshot)
 
 import {
   paletteForPuzzle, fullPalette, ownershipForPuzzle, isMonotonicUnlock,
   PUZZLE_COUNT, TUTORIAL_PALETTE,
 } from "./palette.js";
-import { scorePuzzle } from "./scoring.js";
+import { computeStars, expandedTokenCount } from "./scoring.js";
 import { resolveCommitments, COMMITMENT_STATUS } from "./commitments.js";
 import { containsForbiddenKey } from "./messages.js";
 
@@ -28,6 +31,20 @@ export const TUTORIAL_COUNT = 2;
 const APPLIED_ID_CAP = 256;
 
 const emptyPresence = () => ({ composing: false, guessReady: false, ts: 0 });
+
+// Per-round scoring ledger. Append-only within a round: `message:send` grows it
+// and `message:retract` deliberately does NOT shrink it, so a pair cannot
+// transmit information and then retract it to lower their score. Reset by
+// `beginRound` when a new tutorial or puzzle starts. All plain numbers, so it
+// rides along in `snapshot()` without tripping the forbidden-key guard.
+const emptyRoundStats = () => ({
+  messagesSent: 0,
+  tokensRaw: 0,       // literal token count as typed (a sigil is one token)
+  tokensExpanded: 0,  // a sigil counts as the icons it stands for
+  byAuthor: { A: 0, B: 0 },
+  sigilReuses: 0,     // confirmed-sigil tokens dropped into a card this round
+  firstTryAgree: null,
+});
 const other = (role) => (role === "A" ? "B" : "A");
 const tokenSignature = (tokens) => tokens.map((t) => `${t.kind}:${t.id}`).join("|");
 
@@ -50,6 +67,7 @@ export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } 
     unlockedPalette: [...TUTORIAL_PALETTE],
     sigilCounter: 0,
     messages: [],
+    roundStats: emptyRoundStats(),
     archivedTranscripts: [],
     sigils: { confirmed: [], pending: [] },
     attempts: {},
@@ -118,6 +136,7 @@ function beginRound(next, { tutorial, index, context }) {
   }
 
   next.messages = [];
+  next.roundStats = emptyRoundStats();
   next.commitments = { A: null, B: null };
   next.lastOutcome = null;
   if (!tutorial) next.attempts[index] = next.attempts[index] ?? 0;
@@ -164,6 +183,12 @@ export function reduce(revision, op, actor, context = {}) {
         id, author: actor, tokens: p.tokens.map((t) => ({ ...t })),
         replyTo: p.replyTo ?? null, seq: next.messages.length, ts: now,
       });
+      const stats = next.roundStats ?? (next.roundStats = emptyRoundStats());
+      stats.messagesSent += 1;
+      stats.byAuthor[actor] = (stats.byAuthor[actor] ?? 0) + 1;
+      stats.tokensRaw += p.tokens.length;
+      stats.tokensExpanded += expandedTokenCount(p.tokens, next.sigils.confirmed);
+      stats.sigilReuses += p.tokens.filter((t) => t.kind === "sigil").length;
       recordClientId(next, p.clientId);
       return ok(bumped(next), [{ type: "message", id, author: actor }]);
     }
@@ -173,6 +198,8 @@ export function reduce(revision, op, actor, context = {}) {
       if (index === -1) return fail(revision, "No such message in the current conversation.");
       if (revision.messages[index].author !== actor) return fail(revision, "Only the author may retract a message.");
       const next = structuredClone(revision);
+      // `roundStats` is intentionally left untouched here: a retracted card
+      // still counted as communication for scoring purposes.
       const [removed] = next.messages.splice(index, 1);
       for (const m of next.messages) if (m.replyTo === removed.id) m.replyTo = null;
       next.messages.forEach((m, i) => { m.seq = i; });
@@ -251,14 +278,31 @@ export function reduce(revision, op, actor, context = {}) {
 
       const pi = next.puzzleIndex;
       next.attempts[pi] = (next.attempts[pi] ?? 0) + 1;
-      next.lastOutcome = { status: outcome.status, puzzleIndex: pi, attempt: next.attempts[pi], agree };
+      const stats = next.roundStats ?? (next.roundStats = emptyRoundStats());
+      if (stats.firstTryAgree === null && next.attempts[pi] === 1) stats.firstTryAgree = agree;
+
+      const rawPars = context.pars ?? { parTokens: Infinity, parMessages: Infinity };
+      const parTokens = Number.isFinite(rawPars.parTokens) ? rawPars.parTokens : null;
+      const parMessages = Number.isFinite(rawPars.parMessages) ? rawPars.parMessages : null;
+      // Scored from the append-only ledger, never from the live `messages`
+      // array (which retraction mutates).
+      next.lastOutcome = {
+        status: outcome.status, puzzleIndex: pi, attempt: next.attempts[pi], agree,
+        tokens: stats.tokensRaw, tokensExpanded: stats.tokensExpanded, messages: stats.messagesSent,
+        parTokens, parMessages,
+      };
       next.phase = "reveal";
       if (outcome.status === COMMITMENT_STATUS.SOLVED) {
-        const pars = context.pars ?? { parTokens: Infinity, parMessages: Infinity };
-        next.stars[pi] = scorePuzzle({
-          attempts: next.attempts[pi], messages: next.messages,
-          parTokens: pars.parTokens, parMessages: pars.parMessages,
-        }).stars;
+        const scored = computeStars({
+          attempts: next.attempts[pi],
+          tokens: stats.tokensRaw,
+          messages: stats.messagesSent,
+          parTokens: rawPars.parTokens,
+          parMessages: rawPars.parMessages,
+        });
+        next.stars[pi] = scored.stars;
+        next.lastOutcome.stars = scored.stars;
+        next.lastOutcome.breakdown = { ...scored.breakdown, parTokens, parMessages };
       }
       return ok(bumped(next), [{ type: "resolved", status: outcome.status }]);
     }

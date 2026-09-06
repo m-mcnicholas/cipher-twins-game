@@ -11,7 +11,7 @@ import {
   paletteForPuzzle, fullPalette, isMonotonicUnlock, assertMonotonicSchedule,
   ownershipForPuzzle, positionsForParity,
 } from "../core/palette.js";
-import { computeStars, scorePuzzle, countTokens } from "../core/scoring.js";
+import { computeStars, scorePuzzle, countTokens, expandedTokenCount } from "../core/scoring.js";
 import {
   validateOperation, validateBroadcast, containsForbiddenKey,
 } from "../core/messages.js";
@@ -152,6 +152,54 @@ test("a sigil token counts once regardless of how many icons it expands to", () 
   ];
   assert.equal(countTokens(messages), 3);
   assert.equal(scorePuzzle({ attempts: 1, messages, parTokens: 3, parMessages: 2 }).stars, 3);
+});
+
+test("expandedTokenCount weighs a sigil as the icons it stands for", () => {
+  const confirmed = [{ id: "sigil-1", tokens: [{ kind: "icon", id: "a:1" }, { kind: "icon", id: "a:2" }, { kind: "icon", id: "a:3" }] }];
+  assert.equal(expandedTokenCount([{ kind: "icon", id: "a:1" }, { kind: "sigil", id: "sigil-1" }], confirmed), 4);
+  assert.equal(expandedTokenCount([{ kind: "sigil", id: "sigil-missing" }], confirmed), 1, "an unknown sigil id falls back to 1");
+  assert.equal(expandedTokenCount([], confirmed), 0);
+});
+
+test("the scoring ledger counts every sent card, even after it is retracted", () => {
+  const { rev: start, c } = advanceToPuzzle(0);
+  const pars = { parTokens: 6, parMessages: 2 };
+  let rev = start;
+  const send = (clientId, tokens, actor) =>
+    reduce(rev, { type: "message:send", payload: { clientId, tokens, replyTo: null } }, actor, c).revision;
+  rev = send("A-1", [{ kind: "icon", id: "shape:line" }], "A");
+  rev = send("A-2", [{ kind: "icon", id: "shape:curve" }], "A");
+  rev = send("B-1", [{ kind: "icon", id: "count:2" }], "B");
+  assert.equal(rev.roundStats.messagesSent, 3);
+  assert.deepEqual(rev.roundStats.byAuthor, { A: 2, B: 1 });
+
+  // A retracts both of its cards.
+  for (const id of rev.messages.filter((m) => m.author === "A").map((m) => m.id)) {
+    rev = reduce(rev, { type: "message:retract", payload: { messageId: id } }, "A", c).revision;
+  }
+  assert.equal(rev.messages.length, 1, "the transcript shrinks");
+  assert.equal(rev.roundStats.messagesSent, 3, "the ledger does not");
+
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "A", c).revision;
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "B", { ...c, localGuessCorrect: true, pars }).revision;
+  // 3 sent cards is over parMessages 2 -> the retract trick cannot buy back 3 stars.
+  assert.equal(rev.stars[rev.puzzleIndex], 2);
+  assert.equal(rev.lastOutcome.messages, 3);
+  assert.equal(rev.lastOutcome.stars, 2);
+  assert.equal(rev.lastOutcome.breakdown.withinPar, false);
+});
+
+test("roundStats resets when a new round begins", () => {
+  const { rev: start, c } = advanceToPuzzle(0);
+  let rev = reduce(start, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:line" }], replyTo: null } }, "A", c).revision;
+  assert.equal(rev.roundStats.messagesSent, 1);
+  rev.phase = "reveal";
+  rev.lastOutcome = { status: COMMITMENT_STATUS.SOLVED, puzzleIndex: 0, attempt: 1, agree: true };
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "reveal", fromIndex: 0 } }, "A", c).revision;
+  assert.equal(rev.puzzleIndex, 1);
+  assert.deepEqual(rev.roundStats, {
+    messagesSent: 0, tokensRaw: 0, tokensExpanded: 0, byAuthor: { A: 0, B: 0 }, sigilReuses: 0, firstTryAgree: null,
+  });
 });
 
 // ------------------------------------------------------ protocol schemas

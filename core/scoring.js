@@ -16,6 +16,28 @@ export function tokensInMessage(message) {
   return Array.isArray(message?.tokens) ? message.tokens.length : 0;
 }
 
+// Icon-equivalent weight of a token list: an icon is 1, a saved sigil is the
+// weight of what it expands to (recursively, guarded). Nested sigils are
+// rejected at proposal time, so in practice this is one level deep; the
+// recursion is defence in depth. `confirmedSigils` is the revision's
+// `sigils.confirmed` array (or a Map keyed by sigil id).
+export function expandedTokenCount(tokens, confirmedSigils = [], depth = 0) {
+  if (!Array.isArray(tokens) || depth > 8) return 0;
+  const byId = confirmedSigils instanceof Map
+    ? confirmedSigils
+    : new Map((confirmedSigils || []).map((s) => [s.id, s]));
+  let total = 0;
+  for (const token of tokens) {
+    if (token?.kind === "sigil") {
+      const sigil = byId.get(token.id);
+      total += sigil ? expandedTokenCount(sigil.tokens, byId, depth + 1) : 1;
+    } else {
+      total += 1;
+    }
+  }
+  return total;
+}
+
 export function countTokens(messages = []) {
   return messages.reduce((total, message) => total + tokensInMessage(message), 0);
 }
