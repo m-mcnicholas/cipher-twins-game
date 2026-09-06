@@ -348,6 +348,11 @@ main#app {
   font-weight: 700;
 }
 .answer-slot.filled { border-color: var(--a); color: var(--a); background: var(--a-dim); }
+.answer-slot.locked {
+  border-style: dashed;
+  opacity: 0.75;
+  cursor: default;
+}
 .answer-slot.current { border-color: var(--b); box-shadow: 0 0 0 2px var(--b-dim); }
 .answer-slot.current:empty::after {
   content: "";
@@ -416,6 +421,41 @@ main#app {
 .reveal-scorecard dt { color: var(--text-dim); text-align: right; }
 .reveal-scorecard dd { margin: 0; text-align: left; font-variant-numeric: tabular-nums; }
 .reveal-actions { display: flex; justify-content: center; gap: 12px; }
+
+/* The solved word, rendered as the two players' halves sliding together. */
+.reveal-word-joined {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+.reveal-half {
+  display: inline-grid;
+  place-items: center;
+  min-width: 0.9em;
+  animation: half-join 0.42s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+.reveal-half-mine { color: var(--a); transform-origin: right center; }
+.reveal-half-partner { color: var(--b); transform-origin: left center; }
+.reveal-half-mine { --from: -14px; }
+.reveal-half-partner { --from: 14px; }
+@keyframes half-join {
+  from { opacity: 0; transform: translateX(var(--from, 0)); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.partner-presence {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  font-style: italic;
+  min-height: 1.1em;
+}
+
+.palette-icon.just-unlocked {
+  border-color: var(--b);
+  box-shadow: 0 0 0 2px var(--b-dim);
+}
 
 .connection-banner {
   position: fixed;

@@ -10,6 +10,7 @@
 import { Room } from "./network.js";
 import { GameHost, GameClient } from "./core/session.js";
 import { createInitialRevision, snapshot, fromSnapshot } from "./core/revision.js";
+import { PUZZLE_COUNT } from "./core/palette.js";
 import {
   deriveSalt, commitmentFor, guessIsCorrect, normalizeGuess,
   COMMITMENT_STATUS, COMMITMENT_MESSAGES,
@@ -35,6 +36,8 @@ const state = {
   lastRenderedWordId: null,
   lastAnnouncedMessageId: null,
   lastPhaseKey: null,
+  knownPaletteIds: null,   // Set of icon ids seen last round, for "new icon" cues
+  justUnlockedIds: [],
   recovering: null,
   demo: false,
 };
@@ -390,9 +393,21 @@ async function maybeLoadLetters(r) {
   if (!slice) throw new Error(`No ${parity} slice for ${r.wordId}`);
   state.myLetters = new Map(slice.positions.map((pos, i) => [pos, slice.letters[i]]));
   state.lettersForWord = r.wordId;
-  state.myGuess = Array(r.wordLength).fill(null);
+  state.myGuess = freshGuess(r);
   state.composer = { tokens: [], replyTo: null };
 }
+
+// A blank guess with the player's own (already visible) letters pre-filled and
+// locked. They only ever need to type their partner's half.
+function freshGuess(r) {
+  const guess = Array(r.wordLength).fill(null);
+  for (const [pos, letter] of state.myLetters) {
+    if (pos >= 1 && pos <= r.wordLength) guess[pos - 1] = letter;
+  }
+  return guess;
+}
+
+const guessPositionLocked = (index) => state.myLetters.has(index + 1);
 
 // ---- top-level render ----------------------------------------------
 
@@ -412,10 +427,15 @@ function render() {
   if (r.phase === "reveal") { renderReveal(r); showScreen("reveal"); return; }
   if (r.phase !== "puzzle" && r.phase !== "tutorial") { showScreen("connecting"); return; }
 
+  const phaseKey = `${r.phase}:${r.phase === "tutorial" ? r.tutorialIndex : r.puzzleIndex}`;
+  const roundChanged = phaseKey !== state.lastPhaseKey;
+  if (roundChanged) state.justUnlockedIds = newlyUnlocked(r);
+
   renderTopbar(r);
   renderTutorialBanner(r);
   renderRoundFacts(r);
   renderWordTrack(r);
+  renderPartnerPresence(r);
   renderConversation(r);
   renderArchive(r);
   renderComposer(r);
@@ -424,11 +444,65 @@ function render() {
   renderAnswer(r);
   showScreen("game");
 
-  const phaseKey = `${r.phase}:${r.phase === "tutorial" ? r.tutorialIndex : r.puzzleIndex}`;
-  if (phaseKey !== state.lastPhaseKey) {
+  if (roundChanged) {
     state.lastPhaseKey = phaseKey;
-    announce(r.phase === "tutorial" ? `Tutorial ${r.tutorialIndex + 1} of 2.` : `Puzzle ${r.puzzleIndex + 1} of 7.`);
+    const place = r.phase === "tutorial"
+      ? `Tutorial ${r.tutorialIndex + 1} of 2.`
+      : `Puzzle ${r.puzzleIndex + 1} of ${PUZZLE_COUNT}.`;
+    const unlocked = state.justUnlockedIds.length
+      ? ` New icons unlocked: ${state.justUnlockedIds.map((id) => ICONS[id]?.label ?? id).join(", ")}.`
+      : "";
+    announce(place + unlocked);
   }
+}
+
+// Icon ids in the current palette that were not in the palette we last saw.
+// Returns [] the first time (nothing to celebrate) and after a keep-lexicon
+// rematch (which starts on the full palette).
+function newlyUnlocked(r) {
+  const current = r.unlockedPalette ?? [];
+  const known = state.knownPaletteIds;
+  state.knownPaletteIds = new Set(current);
+  if (!known) return [];
+  return current.filter((id) => !known.has(id));
+}
+
+// ---- partner presence ----------------------------------------------
+// The reducer already models { composing, guessReady } per role and the host
+// relays it out-of-band (core/session.js). We just debounce our own signal and
+// show the partner's.
+
+let presenceTimer = null;
+let lastPresenceSig = "";
+
+function pushPresence() {
+  const r = rev();
+  if (!r || state.demo) return;
+  const composing = state.composer.tokens.length > 0 || state.composer.replyTo != null;
+  const committed = r.commitments?.[state.role] != null;
+  const guessReady = committed
+    || (state.myGuess.length === r.wordLength && state.myGuess.length > 0 && state.myGuess.every(Boolean));
+  const sig = `${composing}|${guessReady}`;
+  if (sig === lastPresenceSig) return;
+  lastPresenceSig = sig;
+  act("presence:update", { composing, guessReady });
+}
+
+function schedulePresence() {
+  if (state.demo) return;
+  clearTimeout(presenceTimer);
+  presenceTimer = setTimeout(pushPresence, 200);
+}
+
+function renderPartnerPresence(r) {
+  const el = $("partner-presence");
+  if (!el) return;
+  const them = r.presence?.[partnerRole()] ?? {};
+  const text = them.composing ? `Player ${partnerRole()} is building a card…`
+    : them.guessReady ? `Player ${partnerRole()} is ready to guess.`
+    : "";
+  el.textContent = text;
+  el.hidden = !text;
 }
 
 function renderTopbar(r) {
@@ -707,6 +781,7 @@ function renderComposer(r) {
     replyChip.textContent = "";
   }
   updateSend();
+  schedulePresence();
 }
 
 function swap(i, j) {
@@ -776,7 +851,7 @@ function renderPaletteDrawer(r) {
     for (const id of ids) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "palette-icon";
+      button.className = state.justUnlockedIds.includes(id) ? "palette-icon just-unlocked" : "palette-icon";
       button.title = ICONS[id].label;
       button.setAttribute("aria-label", `Add ${ICONS[id].label}`);
       button.innerHTML = `${renderIcon(id)}<span class="icon-label">${ICONS[id].label}</span>`;
@@ -866,17 +941,20 @@ function renderLexicon(r) {
 // ---- private guess ----------------------------------------------
 
 function renderAnswer(r) {
-  if (state.myGuess.length !== r.wordLength) state.myGuess = Array(r.wordLength).fill(null);
+  if (state.myGuess.length !== r.wordLength) state.myGuess = freshGuess(r);
   const bar = $("answer-bar");
   bar.replaceChildren();
   const committed = r.commitments?.[state.role] != null;
   const nextEmpty = state.myGuess.indexOf(null);
   state.myGuess.forEach((letter, index) => {
     const slot = document.createElement("span");
+    const locked = guessPositionLocked(index);
     const isCurrent = !committed && index === nextEmpty;
-    slot.className = `answer-slot${letter ? " filled" : ""}${isCurrent ? " current" : ""}`;
+    slot.className = `answer-slot${letter ? " filled" : ""}${locked ? " locked" : ""}${isCurrent ? " current" : ""}`;
     slot.textContent = letter ?? "";
-    slot.setAttribute("aria-label", `Guess position ${index + 1}${letter ? `, ${letter}` : ", empty"}`);
+    slot.setAttribute("aria-label", locked
+      ? `Position ${index + 1}, your letter ${letter}, already known`
+      : `Guess position ${index + 1}${letter ? `, ${letter}` : ", empty"}`);
     bar.append(slot);
   });
 
@@ -907,6 +985,7 @@ function renderAnswer(r) {
   else if (iCommitted && partnerCommitted) status = "Comparing…";
   else if (r.lastOutcome?.tutorial) status = COMMITMENT_MESSAGES[r.lastOutcome.status];
   $("answer-status").textContent = status;
+  schedulePresence();
 }
 
 function fillLetter(letter) {
@@ -934,8 +1013,10 @@ document.addEventListener("keydown", (event) => {
 function backspaceGuess() {
   const r = rev();
   if (r.commitments?.[state.role] != null) return;
-  const index = state.myGuess.findLastIndex(Boolean);
-  if (index >= 0) state.myGuess[index] = null;
+  // Only clear a letter the player typed themselves; their own half stays locked.
+  for (let index = state.myGuess.length - 1; index >= 0; index -= 1) {
+    if (state.myGuess[index] && !guessPositionLocked(index)) { state.myGuess[index] = null; break; }
+  }
   renderAnswer(r);
 }
 
@@ -945,7 +1026,7 @@ $("answer-backspace").addEventListener("click", backspaceGuess);
 $("answer-clear").addEventListener("click", () => {
   const r = rev();
   if (r.commitments?.[state.role] != null) return;
-  state.myGuess = Array(r.wordLength).fill(null);
+  state.myGuess = freshGuess(r);
   renderAnswer(r);
 });
 
@@ -996,6 +1077,29 @@ function fillScorecard(outcome) {
   dl.hidden = false;
 }
 
+// On a solve, both players hold the full word: state.myGuess is the exact
+// string they just committed. Render it as the two colour-coded halves joining.
+function renderRevealWord(r) {
+  const host = $("reveal-word");
+  host.replaceChildren();
+  const word = state.myGuess;
+  const usable = Array.isArray(word) && word.length === r.wordLength && word.every(Boolean);
+  if (!usable) {
+    host.classList.remove("reveal-word-joined");
+    host.textContent = `Puzzle ${r.puzzleIndex + 1} down`;
+    return;
+  }
+  host.classList.add("reveal-word-joined");
+  word.forEach((letter, index) => {
+    const span = document.createElement("span");
+    span.className = `reveal-half ${guessPositionLocked(index) ? "reveal-half-mine" : "reveal-half-partner"}`;
+    span.style.setProperty("--i", String(index));
+    span.textContent = letter;
+    host.append(span);
+  });
+  host.setAttribute("aria-label", `The word was ${word.join("")}`);
+}
+
 function renderReveal(r) {
   const outcome = r.lastOutcome ?? {};
   const solved = outcome.status === COMMITMENT_STATUS.SOLVED;
@@ -1003,9 +1107,9 @@ function renderReveal(r) {
   if (solved) {
     const stars = r.stars[r.puzzleIndex] ?? 1;
     $("reveal-kicker").textContent = "Solved";
-    $("reveal-word").textContent = `Puzzle ${r.puzzleIndex + 1} down`;
+    renderRevealWord(r);
     $("reveal-detail").textContent =
-      `${stars} star${stars === 1 ? "" : "s"} · solved on attempt ${outcome.attempt}.`;
+      `Puzzle ${r.puzzleIndex + 1} down · ${stars} star${stars === 1 ? "" : "s"} · solved on attempt ${outcome.attempt}.`;
     fillScorecard(outcome);
     $("reveal-next").hidden = false;
     $("reveal-retry").hidden = true;
@@ -1016,6 +1120,7 @@ function renderReveal(r) {
   } else {
     $("reveal-scorecard").hidden = true;
     $("reveal-kicker").textContent = outcome.status === COMMITMENT_STATUS.AGREED_WRONG ? "Agreed — but not the answer" : "Not aligned yet";
+    $("reveal-word").classList.remove("reveal-word-joined");
     $("reveal-word").textContent = "";
     $("reveal-detail").textContent = COMMITMENT_MESSAGES[outcome.status] ?? "Try again.";
     $("reveal-next").hidden = true;
@@ -1029,7 +1134,7 @@ $("reveal-next").addEventListener("click", () => {
   act("level:advance", { fromPhase: "reveal", fromIndex: r.puzzleIndex });
 });
 $("reveal-retry").addEventListener("click", () => {
-  state.myGuess = Array(rev().wordLength).fill(null);
+  state.myGuess = freshGuess(rev());
   act("level:retry", {});
 });
 

@@ -597,6 +597,27 @@ test("paired flow: tutorials, a reply, a reused sigil, and a correct solve", asy
   assert.equal(client.revision.stars[0], 3);
 });
 
+test("paired flow: presence is relayed to the partner without a version bump", () => {
+  const { channel, host, client, secretsSeen } = pairedSession();
+  host.dispatchLocal({ type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } });
+  host.dispatchLocal({ type: "tutorial:skipVote", payload: { vote: true } });
+  client.send("tutorial:skipVote", { vote: true });
+  channel.flush();
+  const settledVersion = host.revision.version;
+
+  client.send("presence:update", { composing: true, guessReady: false });
+  channel.flush();
+  assert.equal(host.revision.presence.B.composing, true);
+  assert.equal(client.revision.presence.B.composing, true, "the joiner sees its own relayed presence");
+  assert.equal(host.revision.version, settledVersion, "presence does not bump the version");
+
+  host.dispatchLocal({ type: "presence:update", payload: { composing: false, guessReady: true } });
+  channel.flush();
+  assert.equal(client.revision.presence.A.guessReady, true, "the joiner sees the host's presence");
+  assert.equal(host.revision.version, settledVersion);
+  for (const entry of secretsSeen) assert.equal(containsForbiddenKey(entry.message), false);
+});
+
 test("paired flow: simultaneous messages are serialised, never interleaved", () => {
   const { channel, host, client } = pairedSession();
   host.dispatchLocal({ type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } });
