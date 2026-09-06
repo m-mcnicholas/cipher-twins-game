@@ -20,8 +20,8 @@ export const PUZZLE_PALETTE_UNLOCKS = Object.freeze([
   Object.freeze(["pos:before", "pos:after"]),                    // adjacency relations
   Object.freeze(["pos:between", "cmp:same", "cmp:diff"]),        // last position relation + same/different
   Object.freeze(["count:4", "count:5"]),                         // larger counts
-  Object.freeze(["cat:animal", "cat:object", "cat:nature"]),     // category group one
-  Object.freeze(["cat:action", "cat:food", "cat:feeling"]),      // category group two
+  Object.freeze(["form:enclosed", "form:open", "form:vowel"]),   // letter anatomy
+  Object.freeze(["form:upright", "form:wide", "form:echo"]),     // stroke orientation + "same as previous"
   Object.freeze(["cmp:bigger", "cmp:smaller"]),                  // magnitude comparison
 ]);
 

@@ -101,3 +101,13 @@ test("tutorial and puzzle palettes only reference real icons", async () => {
     for (const id of paletteForPuzzle(tier)) assert.ok(iconIds.has(id), `${id} exists`);
   }
 });
+
+test("the redundant category icons are gone, replaced by letter-form vocabulary", async () => {
+  const { paletteForPuzzle } = await import("../core/palette.js");
+  assert.equal(Object.keys(ICONS).some((id) => id.startsWith("cat:")), false, "no category icons remain");
+  const full = new Set(paletteForPuzzle(TIER_LENGTHS.length - 1));
+  for (const id of ["form:enclosed", "form:open", "form:vowel", "form:upright", "form:wide", "form:echo"]) {
+    assert.ok(ICONS[id] && ICONS[id].group === "Letter form", `${id} is a Letter form icon`);
+    assert.ok(full.has(id), `${id} unlocks by the end of the campaign`);
+  }
+});
