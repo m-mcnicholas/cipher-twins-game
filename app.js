@@ -9,7 +9,10 @@
 
 import { Room } from "./network.js";
 import { GameHost, GameClient } from "./core/session.js";
-import { createInitialRevision, snapshot, fromSnapshot } from "./core/revision.js";
+import {
+  createInitialRevision, snapshot, fromSnapshot,
+  TUTORIAL_OBJECTIVES, tutorialObjectivesMet,
+} from "./core/revision.js";
 import { PUZZLE_COUNT } from "./core/palette.js";
 import {
   deriveSalt, commitmentFor, guessIsCorrect, normalizeGuess,
@@ -39,6 +42,7 @@ const state = {
   lastPhaseKey: null,
   knownPaletteIds: null,   // Set of icon ids seen last round, for "new icon" cues
   justUnlockedIds: [],
+  tutorialDoneSeen: null,  // { key, set } — which checklist steps we've already announced
   recovering: null,
   demo: false,
 };
@@ -413,12 +417,20 @@ const guessPositionLocked = (index) => state.myLetters.has(index + 1);
 // ---- top-level render ----------------------------------------------
 
 const TUTORIAL_TEXT = [
-  "Round one. Build a message by adding icons below, then send it as one card. "
-  + "Try replying to your partner's card, and when you both think you know the word, "
-  + "enter it privately and commit — you'll see whether your fingerprints matched.",
-  "Round two. This time, when one of your cards turns out to be useful, use “Save as sigil”. "
-  + "Your partner approves it and it becomes a numbered token you can both drop into any later message.",
+  "Round one. Work through the checklist together: send a card, reply to your partner, "
+  + "and land on the same private guess. You can leave once every step is ticked and you both say you're ready.",
+  "Round two. Turn a useful card into a saved sigil: one of you proposes it, the other approves it, "
+  + "then drop it into a new card. Finish the checklist and you're through.",
 ];
+
+const OBJECTIVE_LABELS = {
+  sentCard: "Send a card",
+  repliedToPartner: "Reply to your partner's card",
+  matchedGuess: "Both commit the same private guess",
+  proposedSigil: "Turn one of your cards into a sigil",
+  approvedSigil: "Approve your partner's sigil",
+  reusedSigil: "Drop a saved sigil into a new card",
+};
 
 function render() {
   const r = rev();
@@ -520,17 +532,46 @@ function renderTutorialBanner(r) {
   if (r.phase !== "tutorial") { banner.hidden = true; return; }
   banner.hidden = false;
   $("tutorial-text").textContent = TUTORIAL_TEXT[r.tutorialIndex] ?? "";
+
+  const done = r.tutorialObjectives ?? {};
+  const required = TUTORIAL_OBJECTIVES[r.tutorialIndex] ?? [];
+  const allDone = tutorialObjectivesMet(r.tutorialIndex, done);
+  const listEl = $("tutorial-checklist");
+  listEl.replaceChildren();
+  for (const key of required) {
+    const li = document.createElement("li");
+    li.className = done[key] ? "checklist-item checklist-done" : "checklist-item";
+    li.textContent = `${done[key] ? "✓" : "○"} ${OBJECTIVE_LABELS[key] ?? key}`;
+    listEl.append(li);
+  }
+
+  // Announce a step the moment it flips to done.
+  const doneKeys = required.filter((k) => done[k]);
+  const prevKey = `${r.phase}:${r.tutorialIndex}`;
+  if (state.tutorialDoneSeen?.key === prevKey) {
+    for (const k of doneKeys) {
+      if (!state.tutorialDoneSeen.set.has(k)) announce(`Step done: ${OBJECTIVE_LABELS[k] ?? k}.`);
+    }
+  }
+  state.tutorialDoneSeen = { key: prevKey, set: new Set(doneKeys) };
+
   const myReady = r.tutorialReadyVotes?.[state.role];
   const theirReady = r.tutorialReadyVotes?.[partnerRole()];
   const mine = r.tutorialSkipVotes?.[state.role];
   const theirs = r.tutorialSkipVotes?.[partnerRole()];
   $("tutorial-skip-note").textContent =
-    myReady && !theirReady ? "Waiting for your partner to also say they've got it…"
-    : !myReady && theirReady ? "Your partner says they've got it — continue when you're ready."
+    myReady && theirReady && !allDone ? "You're both ready — finish the checklist above to continue."
+    : myReady && !theirReady ? "Waiting for your partner to also say they're ready…"
+    : !myReady && theirReady ? "Your partner is ready — say you're ready once the steps are done."
     : mine && !theirs ? "Waiting for your partner to also agree to skip…"
     : !mine && theirs ? "Your partner wants to skip the tutorials."
     : "";
-  $("tutorial-next").textContent = myReady ? "Waiting for partner…" : "I've got it — continue";
+
+  const nextBtn = $("tutorial-next");
+  nextBtn.disabled = !allDone;
+  nextBtn.textContent = !allDone ? "Finish the steps to continue"
+    : myReady ? "Waiting for partner…"
+    : "We're ready — continue";
 }
 
 $("tutorial-next").addEventListener("click", () => {

@@ -16,6 +16,8 @@
 //   - the per-round scoring ledger (`roundStats`) is append-only: retracting a
 //     card removes it from the transcript but never from the ledger, so stars
 //     are computed from what was actually communicated
+//   - a tutorial only advances on mutual readiness AND a complete checklist
+//     (`TUTORIAL_OBJECTIVES`); `tutorial:skipVote` is the mutual-consent bypass
 //   - no plaintext guess or private letter is ever stored (enforced by snapshot)
 
 import {
@@ -29,6 +31,20 @@ import { containsForbiddenKey } from "./messages.js";
 export const PHASES = Object.freeze(["lobby", "tutorial", "puzzle", "reveal", "complete"]);
 export const TUTORIAL_COUNT = 2;
 const APPLIED_ID_CAP = 256;
+
+// Each tutorial only lets the pair leave once they have actually done the thing
+// it teaches — a shared checklist, not just "I've got it". Mutual readiness is
+// still required on top. `tutorial:skipVote` remains the mutual-consent bypass.
+export const TUTORIAL_OBJECTIVES = Object.freeze([
+  Object.freeze(["sentCard", "repliedToPartner", "matchedGuess"]),
+  Object.freeze(["proposedSigil", "approvedSigil", "reusedSigil"]),
+]);
+
+export function tutorialObjectivesMet(index, done = {}) {
+  const required = TUTORIAL_OBJECTIVES[index];
+  if (!required) return true;
+  return required.every((key) => done[key] === true);
+}
 
 const emptyPresence = () => ({ composing: false, guessReady: false, ts: 0 });
 
@@ -59,6 +75,7 @@ export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } 
     tutorialIndex: 0,
     tutorialSkipVotes: { A: false, B: false },
     tutorialReadyVotes: { A: false, B: false },
+    tutorialObjectives: {},
     puzzleIndex: -1,
     wordId: null,
     wordLength: 0,
@@ -120,6 +137,7 @@ function beginRound(next, { tutorial, index, context }) {
   next.phase = tutorial ? "tutorial" : "puzzle";
   if (tutorial) next.tutorialIndex = index;
   else next.puzzleIndex = index;
+  next.tutorialObjectives = {};
   next.wordId = info?.wordId ?? null;
   next.wordLength = Number.isInteger(info?.wordLength) ? info.wordLength : 0;
   next.category = info?.category ?? null;
@@ -150,6 +168,25 @@ function archiveCurrentRound(next) {
     wordId: next.wordId,
     messages: next.messages,
   });
+}
+
+// Leaves the current tutorial iff both players have said they're ready AND the
+// exercise's checklist is complete. Mutates `next` (archives, starts the next
+// round) and returns the phase effect, or null when it's not time to move yet.
+// Called after any op that can flip a readiness vote or an objective flag.
+function tryLeaveTutorial(next, context) {
+  if (next.phase !== "tutorial") return null;
+  if (!next.tutorialReadyVotes.A || !next.tutorialReadyVotes.B) return null;
+  if (!tutorialObjectivesMet(next.tutorialIndex, next.tutorialObjectives)) return null;
+  next.tutorialReadyVotes = { A: false, B: false };
+  if (next.messages.length) archiveCurrentRound(next);
+  if (next.tutorialIndex + 1 < TUTORIAL_COUNT) {
+    beginRound(next, { tutorial: true, index: next.tutorialIndex + 1, context });
+    return [{ type: "phase", phase: "tutorial", tutorialIndex: next.tutorialIndex }];
+  }
+  next.tutorialIndex = TUTORIAL_COUNT;
+  beginRound(next, { tutorial: false, index: 0, context });
+  return [{ type: "phase", phase: "puzzle", puzzleIndex: 0 }];
 }
 
 /**
@@ -194,8 +231,21 @@ export function reduce(revision, op, actor, context = {}) {
       for (const t of p.tokens) {
         if (t.kind === "sigil") next.sigilUses[t.id] = (next.sigilUses[t.id] ?? 0) + 1;
       }
+      if (next.phase === "tutorial") {
+        const obj = next.tutorialObjectives ?? (next.tutorialObjectives = {});
+        obj.sentCard = true;
+        if (p.replyTo) {
+          const target = next.messages.find((m) => m.id === p.replyTo);
+          if (target && target.author !== actor) obj.repliedToPartner = true;
+        }
+        if (p.tokens.some((t) => t.kind === "sigil" && next.sigils.confirmed.some((s) => s.id === t.id))) {
+          obj.reusedSigil = true;
+        }
+      }
       recordClientId(next, p.clientId);
-      return ok(bumped(next), [{ type: "message", id, author: actor }]);
+      const leftMsg = tryLeaveTutorial(next, context);
+      const msgEffect = { type: "message", id, author: actor };
+      return ok(bumped(next), leftMsg ? [msgEffect, ...leftMsg] : [msgEffect]);
     }
 
     case "message:retract": {
@@ -235,8 +285,11 @@ export function reduce(revision, op, actor, context = {}) {
         tokens: source.tokens.map((t) => ({ ...t })),
         sourceMessageId: source.id, proposedBy: actor,
       });
+      if (next.phase === "tutorial") (next.tutorialObjectives ??= {}).proposedSigil = true;
       recordClientId(next, p.clientId);
-      return ok(bumped(next), [{ type: "sigilProposed", id: `sigil-${n}` }]);
+      const leftProp = tryLeaveTutorial(next, context);
+      const propEffect = { type: "sigilProposed", id: `sigil-${n}` };
+      return ok(bumped(next), leftProp ? [propEffect, ...leftProp] : [propEffect]);
     }
 
     case "sigil:confirm": {
@@ -250,7 +303,10 @@ export function reduce(revision, op, actor, context = {}) {
         id: pending.id, alias: pending.alias, tokens: pending.tokens,
         proposedBy: pending.proposedBy, confirmedBy: actor,
       });
-      return ok(bumped(next), [{ type: "sigilConfirmed", id: pending.id }]);
+      if (next.phase === "tutorial") (next.tutorialObjectives ??= {}).approvedSigil = true;
+      const leftConf = tryLeaveTutorial(next, context);
+      const confEffect = { type: "sigilConfirmed", id: pending.id };
+      return ok(bumped(next), leftConf ? [confEffect, ...leftConf] : [confEffect]);
     }
 
     case "sigil:reject": {
@@ -276,9 +332,14 @@ export function reduce(revision, op, actor, context = {}) {
       next.commitments = { A: null, B: null };
 
       if (next.phase === "tutorial") {
-        // Unscored: show the outcome inline, stay in the exercise.
+        // Unscored: show the outcome inline, stay in the exercise. Committing the
+        // same fingerprint (whatever the word) proves the pair reached a shared
+        // guess, so it satisfies the checklist.
+        if (agree) (next.tutorialObjectives ??= {}).matchedGuess = true;
         next.lastOutcome = { status: outcome.status, tutorial: true, tutorialIndex: next.tutorialIndex, agree };
-        return ok(bumped(next), [{ type: "resolved", status: outcome.status, tutorial: true }]);
+        const leftGuess = tryLeaveTutorial(next, context);
+        const resEffect = { type: "resolved", status: outcome.status, tutorial: true };
+        return ok(bumped(next), leftGuess ? [resEffect, ...leftGuess] : [resEffect]);
       }
 
       const pi = next.puzzleIndex;
@@ -343,18 +404,12 @@ export function reduce(revision, op, actor, context = {}) {
       if (revision.phase !== "tutorial") return fail(revision, "There is nothing to confirm right now.");
       const next = structuredClone(revision);
       next.tutorialReadyVotes[actor] = p.vote;
-      if (next.tutorialReadyVotes.A && next.tutorialReadyVotes.B) {
-        next.tutorialReadyVotes = { A: false, B: false };
-        if (next.messages.length) archiveCurrentRound(next);
-        if (next.tutorialIndex + 1 < TUTORIAL_COUNT) {
-          beginRound(next, { tutorial: true, index: next.tutorialIndex + 1, context });
-          return ok(bumped(next), [{ type: "phase", phase: "tutorial", tutorialIndex: next.tutorialIndex }]);
-        }
-        next.tutorialIndex = TUTORIAL_COUNT;
-        beginRound(next, { tutorial: false, index: 0, context });
-        return ok(bumped(next), [{ type: "phase", phase: "puzzle", puzzleIndex: 0 }]);
-      }
-      return ok(bumped(next), [{ type: "readyVote", role: actor, vote: p.vote }]);
+      const left = tryLeaveTutorial(next, context);
+      if (left) return ok(bumped(next), left);
+      // Both may be ready but the checklist is not done yet — the vote stands
+      // and the round advances automatically once the last objective is met.
+      const blocked = next.tutorialReadyVotes.A && next.tutorialReadyVotes.B;
+      return ok(bumped(next), [{ type: blocked ? "readyBlocked" : "readyVote", role: actor, vote: p.vote }]);
     }
 
     case "level:advance": {
@@ -409,6 +464,7 @@ export function reduce(revision, op, actor, context = {}) {
       next.tutorialIndex = TUTORIAL_COUNT;
       next.tutorialSkipVotes = { A: false, B: false };
       next.tutorialReadyVotes = { A: false, B: false };
+      next.tutorialObjectives = {};
       next.attempts = {};
       next.stars = {};
       next.commitments = { A: null, B: null };

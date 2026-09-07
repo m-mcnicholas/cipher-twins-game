@@ -44,15 +44,37 @@ function opCtx(revision) {
   return operationContext(revision, "A");
 }
 
+// Complete the current tutorial's checklist through the reducer, so a
+// tutorial:readyVote is actually allowed to advance.
+function completeTutorialObjectives(rev, c) {
+  const idx = rev.tutorialIndex;
+  const cc = { ...c, newId: makeIdFactory() };
+  const cid = (who) => `${who}-obj-t${idx}`; // unique per tutorial so it isn't seen as a duplicate
+  if (idx === 0) {
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("A"), tokens: [{ kind: "icon", id: "shape:line" }], replyTo: null } }, "A", cc).revision;
+    const firstId = rev.messages[0].id;
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("B"), tokens: [{ kind: "icon", id: "meta:confirm" }], replyTo: firstId } }, "B", cc).revision;
+    rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "A", cc).revision;
+    rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "B", cc).revision;
+  } else {
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("A"), tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", cc).revision;
+    rev = reduce(rev, { type: "sigil:propose", payload: { clientId: `A-objp-t${idx}`, sourceMessageId: rev.messages[0].id } }, "A", cc).revision;
+    const sid = rev.sigils.pending[0].id;
+    rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: sid } }, "B", cc).revision;
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("B"), tokens: [{ kind: "sigil", id: sid }] } }, "B", cc).revision;
+  }
+  return rev;
+}
+
 // Drive a revision from lobby to the start of puzzle `index` with the reducer.
+// Uses the mutual skip vote (the by-design bypass) so callers that don't care
+// about tutorials aren't coupled to the checklist.
 function advanceToPuzzle(index, over = {}) {
   let rev = createInitialRevision({ roomCode: "ROOMAAA", ownershipSeed: 0 });
   const c = ctx(over);
   rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
   for (let i = 0; i < index; i += 1) {
     // force a solve so advance is permitted
     rev.phase = "reveal";
@@ -438,8 +460,12 @@ test("advance is idempotent and only leaves a reveal once the puzzle is solved",
   assert.equal(ignored.revision.phase, "tutorial");
 
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  assert.equal(rev.tutorialIndex, 0, "one confirmation is not enough");
+  assert.equal(rev.phase, "tutorial", "one confirmation is not enough");
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.tutorialIndex, 0, "both ready, but the checklist is unfinished — still here");
+  rev = completeTutorialObjectives(rev, c);   // both are already ready -> auto-advances
+  assert.equal(rev.tutorialIndex, 1, "checklist done -> next tutorial");
+  rev = completeTutorialObjectives(rev, c);
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
   assert.equal(rev.phase, "puzzle");
@@ -498,14 +524,57 @@ test("a unanimous skip vote jumps straight to the first puzzle", () => {
   assert.equal(rev.puzzleIndex, 0);
 });
 
-test("both players must confirm a tutorial step before it advances", () => {
+test("a tutorial needs both readiness votes AND its checklist before it advances", () => {
   let rev = createInitialRevision();
   const c = ctx();
   rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+
+  // Both say they're ready, but nothing has been done yet.
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  assert.equal(rev.tutorialIndex, 0, "one confirmation is not enough");
+  const blocked = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c);
+  assert.equal(blocked.revision.tutorialIndex, 0, "mutual readiness is not enough on its own");
+  assert.ok(blocked.effects.some((e) => e.type === "readyBlocked"), "the UI is told the checklist is blocking");
+  rev = blocked.revision;
+
+  // Work the checklist: send a card, reply to the partner, match a fingerprint.
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:line" }], replyTo: null } }, "A", c).revision;
+  assert.deepEqual(rev.tutorialObjectives, { sentCard: true });
+  const firstId = rev.messages[0].id;
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "B-1", tokens: [{ kind: "icon", id: "meta:confirm" }], replyTo: firstId } }, "B", c).revision;
+  assert.equal(rev.tutorialObjectives.repliedToPartner, true);
+  assert.equal(rev.phase, "tutorial", "still here — the guess objective is outstanding");
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "A", c).revision;
+  // The final objective lands while both votes still stand -> auto-advance.
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "B", c).revision;
+  assert.equal(rev.tutorialIndex, 1, "checklist complete + both ready -> next tutorial");
+
+  // A replying to their own card does not count as replying to the partner.
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-2", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-3", tokens: [{ kind: "icon", id: "shape:dot" }], replyTo: rev.messages[0].id } }, "A", c).revision;
+  assert.equal(rev.tutorialObjectives.repliedToPartner, undefined);
+
+  // Tutorial 2: propose, approve, reuse.
+  rev = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-4", sourceMessageId: rev.messages[0].id } }, "A", c).revision;
+  assert.equal(rev.tutorialObjectives.proposedSigil, true);
+  const sid = rev.sigils.pending[0].id;
+  rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: sid } }, "B", c).revision;
+  assert.equal(rev.tutorialObjectives.approvedSigil, true);
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
-  assert.equal(rev.tutorialIndex, 1);
+  assert.equal(rev.phase, "tutorial", "reuse still missing");
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "B-2", tokens: [{ kind: "sigil", id: sid }] } }, "B", c).revision;
+  assert.equal(rev.phase, "puzzle", "reusing the sigil finishes the checklist and both were ready");
+  assert.equal(rev.puzzleIndex, 0);
+});
+
+test("a mutual skip vote bypasses the tutorial checklist entirely", () => {
+  let rev = createInitialRevision();
+  const c = ctx();
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.phase, "puzzle");
+  assert.equal(rev.puzzleIndex, 0);
 });
 
 test("keep-lexicon rematch retains sigils, archives, and opens the full palette", () => {

@@ -492,6 +492,19 @@ main#app {
   margin-bottom: 18px;
 }
 .tutorial-banner p { margin: 0 0 12px; color: var(--text-dim); line-height: 1.55; }
+.tutorial-checklist {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.checklist-item {
+  font-size: 0.86rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.checklist-done { color: var(--b); text-decoration: none; }
 .tutorial-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .tutorial-skip-note { color: var(--text-dim); font-size: 0.82rem; }
 

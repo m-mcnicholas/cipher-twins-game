@@ -22,6 +22,13 @@ import { resolve } from "node:path";
 const wordsDir = resolve(import.meta.dirname, "../words");
 const TIER_LENGTHS = [4, 4, 5, 5, 6, 7, 8]; // one scored puzzle per tier
 const PER_TIER = 12;
+// NOTE: the tutorials are now objective-gated (a pair can't leave until they've
+// actually sent a card, replied, matched a guess, and proposed/approved/reused a
+// sigil — see TUTORIAL_OBJECTIVES in core/revision.js), which is the main
+// defence against "solvable before you communicate". These two words should
+// still be re-checked for ambiguity in BOTH parity views once WP-6's
+// scripts/analyze-ambiguity.mjs exists, and swapped if either half plus the
+// category pins the answer immediately.
 const TUTORIALS = [
   { slot: 0, word: "FISH" }, // teaches composing / sending / replying / private agreement
   { slot: 1, word: "LAMP" }, // teaches proposing / confirming / reusing a sigil
