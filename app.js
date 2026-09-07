@@ -1113,6 +1113,22 @@ $("answer-retract").addEventListener("click", () => act("guess:retractCommit", {
 
 function starString(count) { return "★★★".slice(0, count) + "☆☆☆".slice(0, 3 - count); }
 
+// A short plain-language reason for the star count, from the scoring breakdown.
+function starReason(stars, outcome) {
+  const b = outcome.breakdown ?? {};
+  if (stars === 3) {
+    return b.leanedOnLanguage
+      ? "first-try match, and you leaned on your own language."
+      : "first-try match with no shared words yet — clean.";
+  }
+  if (stars === 2) {
+    if (outcome.attempt > 1) return "you got there in two — the first guesses didn't line up.";
+    if (b.noLanguageYet) return "first-try match, but it took a lot of icons.";
+    return "first-try match — save and reuse a sigil for the third star.";
+  }
+  return "solved — it took a few tries.";
+}
+
 // A ratio of "used / par", or just the used count when the par is unknown.
 function vsPar(used, par) {
   return Number.isFinite(par) ? `${used} / ${par}` : String(used);
@@ -1131,6 +1147,8 @@ function fillScorecard(outcome) {
     ["Cards sent", vsPar(outcome.messages, outcome.parMessages)],
     ["Solved on", `attempt ${outcome.attempt}`],
   ];
+  const reuses = outcome.breakdown?.sigilReuses ?? 0;
+  if (reuses > 0) rows.push(["Sigils reused", `${reuses}×`]);
   for (const [term, value] of rows) {
     const dt = document.createElement("dt");
     dt.textContent = term;
@@ -1173,7 +1191,7 @@ function renderReveal(r) {
     $("reveal-kicker").textContent = "Solved";
     renderRevealWord(r);
     $("reveal-detail").textContent =
-      `Puzzle ${r.puzzleIndex + 1} down · ${stars} star${stars === 1 ? "" : "s"} · solved on attempt ${outcome.attempt}.`;
+      `Puzzle ${r.puzzleIndex + 1} down · ${stars} star${stars === 1 ? "" : "s"} — ${starReason(stars, outcome)}`;
     fillScorecard(outcome);
     $("reveal-next").hidden = false;
     $("reveal-retry").hidden = true;

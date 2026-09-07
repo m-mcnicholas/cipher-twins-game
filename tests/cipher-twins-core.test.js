@@ -159,22 +159,37 @@ test("letter ownership alternates parity every puzzle from the random seed", () 
 
 // -------------------------------------------------------------- scoring
 
-test("efficiency stars follow the par thresholds", () => {
+test("stars reward first-try agreement and leaning on the shared language", () => {
   const pars = { parTokens: 10, parMessages: 4 };
-  assert.equal(computeStars({ attempts: 1, tokens: 10, messages: 4, ...pars }).stars, 3);
-  assert.equal(computeStars({ attempts: 1, tokens: 11, messages: 4, ...pars }).stars, 2);
-  assert.equal(computeStars({ attempts: 2, tokens: 15, messages: 6, ...pars }).stars, 2);
-  assert.equal(computeStars({ attempts: 3, tokens: 10, messages: 4, ...pars }).stars, 1);
-  assert.equal(computeStars({ attempts: 1, tokens: 16, messages: 4, ...pars }).stars, 1);
+
+  // First-try match while reusing a saved sigil -> 3, regardless of volume.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 2, confirmedSigils: 3, tokens: 40, messages: 12, ...pars }).stars, 3);
+
+  // Early puzzle, no language yet, first-try match within slack -> 3.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 0, confirmedSigils: 0, tokens: 12, messages: 4, ...pars }).stars, 3);
+  // ...but blowing well past par with no language to show for it -> 2.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 0, confirmedSigils: 0, tokens: 30, messages: 9, ...pars }).stars, 2);
+
+  // A first-try solve with a language that went unused this round -> 2.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 0, confirmedSigils: 4, tokens: 8, messages: 3, ...pars }).stars, 2);
+
+  // Agreed-wrong first, then corrected -> 2. Three+ attempts -> 1.
+  assert.equal(computeStars({ attempts: 2, firstTryAgree: true, sigilReuses: 1, confirmedSigils: 2, tokens: 8, messages: 3, ...pars }).stars, 2);
+  assert.equal(computeStars({ attempts: 3, firstTryAgree: false, sigilReuses: 5, confirmedSigils: 2, tokens: 8, messages: 3, ...pars }).stars, 1);
+
+  // Solved first try but the two never actually matched on attempt 1
+  // (mismatch then match counts as two attempts) -> 2, not 3.
+  assert.equal(computeStars({ attempts: 2, firstTryAgree: false, sigilReuses: 2, confirmedSigils: 2, tokens: 8, messages: 3, ...pars }).stars, 2);
 });
 
-test("a sigil token counts once regardless of how many icons it expands to", () => {
+test("a sigil token counts once for volume, its icons for weight", () => {
   const messages = [
     { tokens: [{ kind: "icon", id: "shape:line" }, { kind: "sigil", id: "sigil-1" }] },
     { tokens: [{ kind: "sigil", id: "sigil-1" }] },
   ];
-  assert.equal(countTokens(messages), 3);
-  assert.equal(scorePuzzle({ attempts: 1, messages, parTokens: 3, parMessages: 2 }).stars, 3);
+  assert.equal(countTokens(messages), 3, "a sigil is one token for raw volume");
+  const confirmed = [{ id: "sigil-1", tokens: [{ kind: "icon", id: "a:1" }, { kind: "icon", id: "a:2" }] }];
+  assert.equal(expandedTokenCount(messages[0].tokens, confirmed), 3, "and its icons where weight is wanted");
 });
 
 test("expandedTokenCount weighs a sigil as the icons it stands for", () => {
@@ -371,6 +386,19 @@ test("a sigil needs the proposer's own message plus the partner's confirmation",
     operationContext(rev, "A"),
   );
   assert.ok(sendWithSigil);
+});
+
+test("a sigil cannot be built from another sigil", () => {
+  let rev = advanceToPuzzle(0).rev;
+  const c = ctx();
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-2", sourceMessageId: rev.messages[0].id } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: "sigil-1" } }, "B", c).revision;
+
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-3", tokens: [{ kind: "sigil", id: "sigil-1" }, { kind: "icon", id: "shape:dot" }], replyTo: null } }, "A", c).revision;
+  const nested = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-4", sourceMessageId: rev.messages.at(-1).id } }, "A", c);
+  assert.equal(nested.ok, false);
+  assert.match(nested.error, /another sigil/);
 });
 
 test("rejected sigil numbers are burned, never reused", () => {

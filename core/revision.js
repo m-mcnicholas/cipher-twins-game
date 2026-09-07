@@ -270,6 +270,11 @@ export function reduce(revision, op, actor, context = {}) {
       if (!source) return fail(revision, "The proposed sigil's source message is not in the current conversation.");
       if (source.author !== actor) return fail(revision, "You can only turn your own message into a sigil.");
       if (source.tokens.length < 2) return fail(revision, "A sigil needs at least two tokens.");
+      if (source.tokens.some((t) => t.kind === "sigil")) {
+        // No nesting: a sigil made of sigils compresses arbitrarily for little
+        // shared meaning, and it makes "one token" scoring meaningless.
+        return fail(revision, "A sigil can't be built from another sigil — use plain icons.");
+      }
       const signature = tokenSignature(source.tokens);
       if (revision.sigils.confirmed.some((s) => tokenSignature(s.tokens) === signature)) {
         return fail(revision, "That sequence is already a saved sigil.");
@@ -365,6 +370,10 @@ export function reduce(revision, op, actor, context = {}) {
           messages: stats.messagesSent,
           parTokens: rawPars.parTokens,
           parMessages: rawPars.parMessages,
+          firstTryAgree: stats.firstTryAgree === true,
+          sigilReuses: stats.sigilReuses,
+          confirmedSigils: next.sigils.confirmed.length,
+          byAuthor: stats.byAuthor,
         });
         next.stars[pi] = scored.stars;
         next.lastOutcome.stars = scored.stars;
