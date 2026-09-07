@@ -43,6 +43,7 @@ const state = {
   knownPaletteIds: null,   // Set of icon ids seen last round, for "new icon" cues
   justUnlockedIds: [],
   tutorialDoneSeen: null,  // { key, set } — which checklist steps we've already announced
+  puzzleCount: PUZZLE_COUNT, // host's chosen game length; 3 for a quick game
   recovering: null,
   demo: false,
 };
@@ -60,6 +61,7 @@ function announce(text) {
 
 const rev = () => state.host?.revision ?? state.client?.revision ?? null;
 const partnerRole = () => (state.role === "A" ? "B" : "A");
+const puzzleTotal = (r) => (Number.isInteger(r?.puzzleCount) ? r.puzzleCount : PUZZLE_COUNT);
 
 function act(type, payload = {}) {
   if (state.demo) return; // the scripted demo drives both sides itself
@@ -75,12 +77,19 @@ function newClientId() {
 
 // ---- host word selection ------------------------------------------------
 
-function makeHostWordSource(alreadyUsed = []) {
+function makeHostWordSource(alreadyUsed = [], puzzleCount = PUZZLE_COUNT) {
   const used = new Set(alreadyUsed);
   const parByIndex = {};
   let lastCategory = null;
 
   const stash = (key, meta) => { parByIndex[key] = { parTokens: meta.parTokens, parMessages: meta.parMessages }; };
+
+  // A quick (3-puzzle) game samples tiers across the whole difficulty range
+  // instead of just the first three, so it still ramps.
+  const tierFor = (index) => {
+    if (puzzleCount >= PUZZLE_COUNT || puzzleCount <= 1) return index;
+    return Math.round((index * (PUZZLE_COUNT - 1)) / (puzzleCount - 1));
+  };
 
   const nextWord = ({ tutorial, index, runNumber }) => {
     if (tutorial) {
@@ -89,7 +98,7 @@ function makeHostWordSource(alreadyUsed = []) {
       stash(`t${index}`, w);
       return { wordId: w.id, wordLength: w.length, category: w.category };
     }
-    const tier = index;
+    const tier = tierFor(index);
     let pool = ACTIVE_WORDS.filter((a) => a.tier === tier && !used.has(a.id));
     if (!pool.length) pool = ACTIVE_WORDS.filter((a) => a.tier === tier);
     if (runNumber > 1) {
@@ -101,7 +110,7 @@ function makeHostWordSource(alreadyUsed = []) {
     const pick = choices[crypto.getRandomValues(new Uint32Array(1))[0] % choices.length];
     used.add(pick.id);
     lastCategory = pick.category;
-    stash(tier, pick);
+    stash(index, pick); // pars are looked up by puzzle index, which may differ from tier
     return { wordId: pick.id, wordLength: pick.length, category: pick.category };
   };
 
@@ -113,6 +122,8 @@ function makeHostWordSource(alreadyUsed = []) {
 
 $("host-room-btn").addEventListener("click", async () => {
   $("host-room-btn").disabled = true;
+  const lengthChoice = document.querySelector('input[name="game-length"]:checked')?.value;
+  state.puzzleCount = lengthChoice === "3" ? 3 : PUZZLE_COUNT;
   state.room = new Room();
   wireRoom();
   try {
@@ -241,11 +252,13 @@ function buildHost(code, revision) {
   const knownWordIds = revision
     ? [revision.wordId, ...revision.archivedTranscripts.map((t) => t.wordId)].filter(Boolean)
     : [];
-  const { nextWord, pars } = makeHostWordSource(knownWordIds);
+  const puzzleCount = revision?.puzzleCount ?? state.puzzleCount ?? PUZZLE_COUNT;
+  const { nextWord, pars } = makeHostWordSource(knownWordIds, puzzleCount);
   state.host = new GameHost(state.room, {
     revision: revision ?? createInitialRevision({
       roomCode: code,
       ownershipSeed: crypto.getRandomValues(new Uint8Array(1))[0],
+      puzzleCount,
     }),
     nextWord, pars, newId: hostNewId,
   });
@@ -461,7 +474,7 @@ function render() {
     state.lastPhaseKey = phaseKey;
     const place = r.phase === "tutorial"
       ? `Tutorial ${r.tutorialIndex + 1} of 2.`
-      : `Puzzle ${r.puzzleIndex + 1} of ${PUZZLE_COUNT}.`;
+      : `Puzzle ${r.puzzleIndex + 1} of ${puzzleTotal(r)}.`;
     const unlocked = state.justUnlockedIds.length
       ? ` New icons unlocked: ${state.justUnlockedIds.map((id) => ICONS[id]?.label ?? id).join(", ")}.`
       : "";
@@ -522,7 +535,7 @@ function renderTopbar(r) {
   const isTut = r.phase === "tutorial";
   $("round-label").textContent = isTut ? "Tutorial" : "Puzzle";
   $("round-label").classList.toggle("round-label-tutorial", isTut);
-  $("round-number").textContent = isTut ? `${r.tutorialIndex + 1} / 2` : `${r.puzzleIndex + 1} / 7`;
+  $("round-number").textContent = isTut ? `${r.tutorialIndex + 1} / 2` : `${r.puzzleIndex + 1} / ${puzzleTotal(r)}`;
   const total = Object.values(r.stars).reduce((a, b) => a + b, 0);
   $("stars-indicator").textContent = total ? `★ ${total}` : "";
 }
@@ -1222,9 +1235,11 @@ $("reveal-retry").addEventListener("click", () => {
 
 function renderComplete(r) {
   const total = Object.values(r.stars).reduce((a, b) => a + b, 0);
-  const max = PUZZLE_COUNT * 3;
+  const max = puzzleTotal(r) * 3;
   $("complete-stars").textContent = "★".repeat(Math.min(total, max));
   $("complete-score").textContent = `${total} / ${max} stars`;
+  const kicker = $("screen-complete").querySelector(".reveal-kicker");
+  if (kicker) kicker.textContent = `All ${puzzleTotal(r)} solved`;
   renderLexiconRecap(r);
   announce(`All puzzles complete. ${total} of ${max} stars.`);
 }

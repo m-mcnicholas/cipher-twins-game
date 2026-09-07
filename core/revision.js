@@ -64,13 +64,17 @@ const emptyRoundStats = () => ({
 const other = (role) => (role === "A" ? "B" : "A");
 const tokenSignature = (tokens) => tokens.map((t) => `${t.kind}:${t.id}`).join("|");
 
-export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } = {}) {
+export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0, puzzleCount } = {}) {
   const seed = ownershipSeed & 1;
+  const count = Number.isInteger(puzzleCount) && puzzleCount >= 1
+    ? Math.min(PUZZLE_COUNT, puzzleCount)
+    : PUZZLE_COUNT;
   return {
     version: 0,
     phase: "lobby",
     runNumber: 1,
     roomCode,
+    puzzleCount: count,
     ownershipSeed: seed,
     tutorialIndex: 0,
     tutorialSkipVotes: { A: false, B: false },
@@ -442,7 +446,8 @@ export function reduce(revision, op, actor, context = {}) {
         archiveCurrentRound(next);
         const nextIndex = next.puzzleIndex + 1;
         next.lastOutcome = null;
-        if (nextIndex >= PUZZLE_COUNT) {
+        const lastPuzzle = Math.min(next.puzzleCount ?? PUZZLE_COUNT, PUZZLE_COUNT);
+        if (nextIndex >= lastPuzzle) {
           next.phase = "complete";
           next.messages = [];
           return ok(bumped(next), [{ type: "phase", phase: "complete" }]);

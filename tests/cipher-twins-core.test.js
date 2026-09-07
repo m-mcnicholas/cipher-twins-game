@@ -525,6 +525,28 @@ test("every puzzle transition keeps the palette monotonic and flips ownership", 
   assert.equal(rev.phase, "complete");
 });
 
+test("a quick game finishes after its shorter puzzle count", () => {
+  let rev = createInitialRevision({ puzzleCount: 3 });
+  assert.equal(rev.puzzleCount, 3);
+  const c = ctx();
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.puzzleIndex, 0);
+  for (let i = 0; i < 3; i += 1) {
+    rev.phase = "reveal";
+    rev.lastOutcome = { status: COMMITMENT_STATUS.SOLVED, puzzleIndex: i, attempt: 1, agree: true };
+    rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "reveal", fromIndex: i } }, "A", c).revision;
+  }
+  assert.equal(rev.phase, "complete", "three solves ends a quick game");
+});
+
+test("puzzleCount is clamped to the real campaign length", () => {
+  assert.equal(createInitialRevision({ puzzleCount: 99 }).puzzleCount, PUZZLE_COUNT);
+  assert.equal(createInitialRevision({ puzzleCount: 0 }).puzzleCount, PUZZLE_COUNT);
+  assert.equal(createInitialRevision({}).puzzleCount, PUZZLE_COUNT);
+});
+
 test("a tutorial guess resolves inline without scoring or leaving the exercise", () => {
   let rev = createInitialRevision();
   const c = ctx();

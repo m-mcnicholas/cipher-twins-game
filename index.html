@@ -35,6 +35,11 @@
         <article class="lobby-card">
           <h2>Host a room</h2>
           <p>Create a room and share the code with your partner.</p>
+          <fieldset class="game-length" id="game-length">
+            <legend>Game length</legend>
+            <label><input type="radio" name="game-length" value="7" checked> Full campaign — 7 puzzles</label>
+            <label><input type="radio" name="game-length" value="3"> Quick game — 3 puzzles</label>
+          </fieldset>
           <button type="button" id="host-room-btn" class="primary-button">Create room</button>
           <div class="room-code-display" id="host-code-display" hidden>
             <p class="room-code-label">Room code</p>
