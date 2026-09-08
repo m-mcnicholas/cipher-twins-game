@@ -131,6 +131,16 @@ main#app {
 }
 .lobby-card h2 { margin: 0 0 6px; font-family: var(--serif); font-size: 1.2rem; }
 .lobby-card > p { margin: 0 0 14px; color: var(--text-dim); font-size: 0.92rem; }
+.game-length {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  display: grid;
+  gap: 6px;
+}
+.game-length legend { padding: 0 6px; font-size: 0.78rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+.game-length label { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; }
 
 #join-form { display: flex; gap: 8px; }
 #join-code-input {
@@ -348,6 +358,11 @@ main#app {
   font-weight: 700;
 }
 .answer-slot.filled { border-color: var(--a); color: var(--a); background: var(--a-dim); }
+.answer-slot.locked {
+  border-style: dashed;
+  opacity: 0.75;
+  cursor: default;
+}
 .answer-slot.current { border-color: var(--b); box-shadow: 0 0 0 2px var(--b-dim); }
 .answer-slot.current:empty::after {
   content: "";
@@ -404,7 +419,53 @@ main#app {
   letter-spacing: 0.06em;
 }
 .reveal-detail { margin: 0 0 20px; color: var(--text-dim); }
+.reveal-scorecard {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: center;
+  column-gap: 18px;
+  row-gap: 4px;
+  margin: 0 0 22px;
+  font-size: 0.9rem;
+}
+.reveal-scorecard dt { color: var(--text-dim); text-align: right; }
+.reveal-scorecard dd { margin: 0; text-align: left; font-variant-numeric: tabular-nums; }
 .reveal-actions { display: flex; justify-content: center; gap: 12px; }
+
+/* The solved word, rendered as the two players' halves sliding together. */
+.reveal-word-joined {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+.reveal-half {
+  display: inline-grid;
+  place-items: center;
+  min-width: 0.9em;
+  animation: half-join 0.42s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+.reveal-half-mine { color: var(--a); transform-origin: right center; }
+.reveal-half-partner { color: var(--b); transform-origin: left center; }
+.reveal-half-mine { --from: -14px; }
+.reveal-half-partner { --from: 14px; }
+@keyframes half-join {
+  from { opacity: 0; transform: translateX(var(--from, 0)); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.partner-presence {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  font-style: italic;
+  min-height: 1.1em;
+}
+
+.palette-icon.just-unlocked {
+  border-color: var(--b);
+  box-shadow: 0 0 0 2px var(--b-dim);
+}
 
 .connection-banner {
   position: fixed;
@@ -441,6 +502,19 @@ main#app {
   margin-bottom: 18px;
 }
 .tutorial-banner p { margin: 0 0 12px; color: var(--text-dim); line-height: 1.55; }
+.tutorial-checklist {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.checklist-item {
+  font-size: 0.86rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.checklist-done { color: var(--b); text-decoration: none; }
 .tutorial-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .tutorial-skip-note { color: var(--text-dim); font-size: 0.82rem; }
 
@@ -562,6 +636,20 @@ main#app {
 }
 .token-chip svg { width: 20px; height: 20px; }
 .token-sigil { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; color: var(--a); border-color: var(--a); background: var(--a-dim); }
+.token-sigil[style*="--sigil-hue"] {
+  color: hsl(var(--sigil-hue) 60% 62%);
+  border-color: hsl(var(--sigil-hue) 55% 55%);
+  background: hsl(var(--sigil-hue) 55% 55% / 0.14);
+}
+.sigil-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  color: hsl(var(--sigil-hue, 200) 60% 60%);
+}
+.sigil-badge svg { width: 100%; height: 100%; }
 
 .micro-button {
   padding: 3px 8px;
@@ -637,7 +725,16 @@ main#app {
 .lexicon-empty { margin: 6px 0 0; color: var(--text-dim); font-size: 0.82rem; }
 #lexicon-confirmed h3, #lexicon-pending h3 { margin: 8px 0 6px; font-size: 0.82rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
 .sigil-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
-.sigil-alias { font-weight: 700; color: var(--a); font-size: 0.82rem; min-width: 54px; }
+.sigil-alias { display: inline-flex; align-items: center; font-weight: 700; color: var(--a); font-size: 0.82rem; min-width: 54px; }
+.sigil-row .sigil-alias { color: hsl(var(--sigil-hue, 40) 55% 62%); }
+.sigil-uses { font-weight: 400; font-size: 0.72rem; color: var(--text-dim); }
+
+.lexicon-recap { margin: 4px 0 20px; text-align: left; }
+.lexicon-recap h3 { margin: 0 0 8px; font-size: 0.9rem; }
+.lexicon-recap-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.lexicon-recap-list li { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; }
+.lexicon-recap-meaning { color: var(--text-dim); flex: 1; }
+.lexicon-recap-fav { margin: 10px 0 0; font-size: 0.8rem; color: var(--text-dim); }
 .sigil-preview { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .sigil-preview .token-chip { min-width: 24px; height: 24px; }
 .sigil-preview svg { width: 16px; height: 16px; }

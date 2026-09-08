@@ -72,6 +72,12 @@ export class GameHost extends EventTarget {
       this.dispatchEvent(new CustomEvent("effect", { detail: { ...effect, actor } }));
     }
     if (changed && !result.ephemeral) this._broadcast();
+    // Presence is versionless and stripped from snapshots, so it never rides a
+    // revision broadcast. Push it separately so the partner can show "building a
+    // card" / "ready to guess".
+    else if (result.ephemeral && result.effects.some((e) => e.type === "presence")) {
+      this.endpoint.send("presence:sync", { presence: this.revision.presence });
+    }
     return result;
   }
 
@@ -151,6 +157,14 @@ export class GameClient extends EventTarget {
     }
     const broadcast = validateBroadcast(raw);
     if (!broadcast) return;
+    if (broadcast.type === "presence:sync") {
+      const incoming = broadcast.payload.presence;
+      if (this.revision && incoming && typeof incoming === "object") {
+        this.revision = { ...this.revision, presence: incoming };
+        this.dispatchEvent(new CustomEvent("revision", { detail: { version: this.revision.version } }));
+      }
+      return;
+    }
     if (broadcast.type === "revision:full" || broadcast.type === "sync:full") {
       const incoming = broadcast.payload.revision;
       if (this.revision && incoming.version < this.revision.version) return; // stale

@@ -13,13 +13,18 @@
 //   - a sigil needs its proposer plus one confirmation from the *other* role
 //   - the palette only ever grows
 //   - an attempt is counted once, when both commitments have resolved
+//   - the per-round scoring ledger (`roundStats`) is append-only: retracting a
+//     card removes it from the transcript but never from the ledger, so stars
+//     are computed from what was actually communicated
+//   - a tutorial only advances on mutual readiness AND a complete checklist
+//     (`TUTORIAL_OBJECTIVES`); `tutorial:skipVote` is the mutual-consent bypass
 //   - no plaintext guess or private letter is ever stored (enforced by snapshot)
 
 import {
   paletteForPuzzle, fullPalette, ownershipForPuzzle, isMonotonicUnlock,
   PUZZLE_COUNT, TUTORIAL_PALETTE,
 } from "./palette.js";
-import { scorePuzzle } from "./scoring.js";
+import { computeStars, expandedTokenCount } from "./scoring.js";
 import { resolveCommitments, COMMITMENT_STATUS } from "./commitments.js";
 import { containsForbiddenKey } from "./messages.js";
 
@@ -27,21 +32,54 @@ export const PHASES = Object.freeze(["lobby", "tutorial", "puzzle", "reveal", "c
 export const TUTORIAL_COUNT = 2;
 const APPLIED_ID_CAP = 256;
 
+// Each tutorial only lets the pair leave once they have actually done the thing
+// it teaches — a shared checklist, not just "I've got it". Mutual readiness is
+// still required on top. `tutorial:skipVote` remains the mutual-consent bypass.
+export const TUTORIAL_OBJECTIVES = Object.freeze([
+  Object.freeze(["sentCard", "repliedToPartner", "matchedGuess"]),
+  Object.freeze(["proposedSigil", "approvedSigil", "reusedSigil"]),
+]);
+
+export function tutorialObjectivesMet(index, done = {}) {
+  const required = TUTORIAL_OBJECTIVES[index];
+  if (!required) return true;
+  return required.every((key) => done[key] === true);
+}
+
 const emptyPresence = () => ({ composing: false, guessReady: false, ts: 0 });
+
+// Per-round scoring ledger. Append-only within a round: `message:send` grows it
+// and `message:retract` deliberately does NOT shrink it, so a pair cannot
+// transmit information and then retract it to lower their score. Reset by
+// `beginRound` when a new tutorial or puzzle starts. All plain numbers, so it
+// rides along in `snapshot()` without tripping the forbidden-key guard.
+const emptyRoundStats = () => ({
+  messagesSent: 0,
+  tokensRaw: 0,       // literal token count as typed (a sigil is one token)
+  tokensExpanded: 0,  // a sigil counts as the icons it stands for
+  byAuthor: { A: 0, B: 0 },
+  sigilReuses: 0,     // confirmed-sigil tokens dropped into a card this round
+  firstTryAgree: null,
+});
 const other = (role) => (role === "A" ? "B" : "A");
 const tokenSignature = (tokens) => tokens.map((t) => `${t.kind}:${t.id}`).join("|");
 
-export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } = {}) {
+export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0, puzzleCount } = {}) {
   const seed = ownershipSeed & 1;
+  const count = Number.isInteger(puzzleCount) && puzzleCount >= 1
+    ? Math.min(PUZZLE_COUNT, puzzleCount)
+    : PUZZLE_COUNT;
   return {
     version: 0,
     phase: "lobby",
     runNumber: 1,
     roomCode,
+    puzzleCount: count,
     ownershipSeed: seed,
     tutorialIndex: 0,
     tutorialSkipVotes: { A: false, B: false },
     tutorialReadyVotes: { A: false, B: false },
+    tutorialObjectives: {},
     puzzleIndex: -1,
     wordId: null,
     wordLength: 0,
@@ -49,7 +87,9 @@ export function createInitialRevision({ roomCode = "LOCAL", ownershipSeed = 0 } 
     ownership: ownershipForPuzzle(seed, 0),
     unlockedPalette: [...TUTORIAL_PALETTE],
     sigilCounter: 0,
+    sigilUses: {},        // sigilId -> times dropped into a card, cumulative across the run
     messages: [],
+    roundStats: emptyRoundStats(),
     archivedTranscripts: [],
     sigils: { confirmed: [], pending: [] },
     attempts: {},
@@ -101,6 +141,7 @@ function beginRound(next, { tutorial, index, context }) {
   next.phase = tutorial ? "tutorial" : "puzzle";
   if (tutorial) next.tutorialIndex = index;
   else next.puzzleIndex = index;
+  next.tutorialObjectives = {};
   next.wordId = info?.wordId ?? null;
   next.wordLength = Number.isInteger(info?.wordLength) ? info.wordLength : 0;
   next.category = info?.category ?? null;
@@ -118,6 +159,7 @@ function beginRound(next, { tutorial, index, context }) {
   }
 
   next.messages = [];
+  next.roundStats = emptyRoundStats();
   next.commitments = { A: null, B: null };
   next.lastOutcome = null;
   if (!tutorial) next.attempts[index] = next.attempts[index] ?? 0;
@@ -130,6 +172,25 @@ function archiveCurrentRound(next) {
     wordId: next.wordId,
     messages: next.messages,
   });
+}
+
+// Leaves the current tutorial iff both players have said they're ready AND the
+// exercise's checklist is complete. Mutates `next` (archives, starts the next
+// round) and returns the phase effect, or null when it's not time to move yet.
+// Called after any op that can flip a readiness vote or an objective flag.
+function tryLeaveTutorial(next, context) {
+  if (next.phase !== "tutorial") return null;
+  if (!next.tutorialReadyVotes.A || !next.tutorialReadyVotes.B) return null;
+  if (!tutorialObjectivesMet(next.tutorialIndex, next.tutorialObjectives)) return null;
+  next.tutorialReadyVotes = { A: false, B: false };
+  if (next.messages.length) archiveCurrentRound(next);
+  if (next.tutorialIndex + 1 < TUTORIAL_COUNT) {
+    beginRound(next, { tutorial: true, index: next.tutorialIndex + 1, context });
+    return [{ type: "phase", phase: "tutorial", tutorialIndex: next.tutorialIndex }];
+  }
+  next.tutorialIndex = TUTORIAL_COUNT;
+  beginRound(next, { tutorial: false, index: 0, context });
+  return [{ type: "phase", phase: "puzzle", puzzleIndex: 0 }];
 }
 
 /**
@@ -164,8 +225,31 @@ export function reduce(revision, op, actor, context = {}) {
         id, author: actor, tokens: p.tokens.map((t) => ({ ...t })),
         replyTo: p.replyTo ?? null, seq: next.messages.length, ts: now,
       });
+      const stats = next.roundStats ?? (next.roundStats = emptyRoundStats());
+      stats.messagesSent += 1;
+      stats.byAuthor[actor] = (stats.byAuthor[actor] ?? 0) + 1;
+      stats.tokensRaw += p.tokens.length;
+      stats.tokensExpanded += expandedTokenCount(p.tokens, next.sigils.confirmed);
+      stats.sigilReuses += p.tokens.filter((t) => t.kind === "sigil").length;
+      if (!next.sigilUses) next.sigilUses = {};
+      for (const t of p.tokens) {
+        if (t.kind === "sigil") next.sigilUses[t.id] = (next.sigilUses[t.id] ?? 0) + 1;
+      }
+      if (next.phase === "tutorial") {
+        const obj = next.tutorialObjectives ?? (next.tutorialObjectives = {});
+        obj.sentCard = true;
+        if (p.replyTo) {
+          const target = next.messages.find((m) => m.id === p.replyTo);
+          if (target && target.author !== actor) obj.repliedToPartner = true;
+        }
+        if (p.tokens.some((t) => t.kind === "sigil" && next.sigils.confirmed.some((s) => s.id === t.id))) {
+          obj.reusedSigil = true;
+        }
+      }
       recordClientId(next, p.clientId);
-      return ok(bumped(next), [{ type: "message", id, author: actor }]);
+      const leftMsg = tryLeaveTutorial(next, context);
+      const msgEffect = { type: "message", id, author: actor };
+      return ok(bumped(next), leftMsg ? [msgEffect, ...leftMsg] : [msgEffect]);
     }
 
     case "message:retract": {
@@ -173,6 +257,8 @@ export function reduce(revision, op, actor, context = {}) {
       if (index === -1) return fail(revision, "No such message in the current conversation.");
       if (revision.messages[index].author !== actor) return fail(revision, "Only the author may retract a message.");
       const next = structuredClone(revision);
+      // `roundStats` is intentionally left untouched here: a retracted card
+      // still counted as communication for scoring purposes.
       const [removed] = next.messages.splice(index, 1);
       for (const m of next.messages) if (m.replyTo === removed.id) m.replyTo = null;
       next.messages.forEach((m, i) => { m.seq = i; });
@@ -188,6 +274,11 @@ export function reduce(revision, op, actor, context = {}) {
       if (!source) return fail(revision, "The proposed sigil's source message is not in the current conversation.");
       if (source.author !== actor) return fail(revision, "You can only turn your own message into a sigil.");
       if (source.tokens.length < 2) return fail(revision, "A sigil needs at least two tokens.");
+      if (source.tokens.some((t) => t.kind === "sigil")) {
+        // No nesting: a sigil made of sigils compresses arbitrarily for little
+        // shared meaning, and it makes "one token" scoring meaningless.
+        return fail(revision, "A sigil can't be built from another sigil — use plain icons.");
+      }
       const signature = tokenSignature(source.tokens);
       if (revision.sigils.confirmed.some((s) => tokenSignature(s.tokens) === signature)) {
         return fail(revision, "That sequence is already a saved sigil.");
@@ -203,8 +294,11 @@ export function reduce(revision, op, actor, context = {}) {
         tokens: source.tokens.map((t) => ({ ...t })),
         sourceMessageId: source.id, proposedBy: actor,
       });
+      if (next.phase === "tutorial") (next.tutorialObjectives ??= {}).proposedSigil = true;
       recordClientId(next, p.clientId);
-      return ok(bumped(next), [{ type: "sigilProposed", id: `sigil-${n}` }]);
+      const leftProp = tryLeaveTutorial(next, context);
+      const propEffect = { type: "sigilProposed", id: `sigil-${n}` };
+      return ok(bumped(next), leftProp ? [propEffect, ...leftProp] : [propEffect]);
     }
 
     case "sigil:confirm": {
@@ -218,7 +312,10 @@ export function reduce(revision, op, actor, context = {}) {
         id: pending.id, alias: pending.alias, tokens: pending.tokens,
         proposedBy: pending.proposedBy, confirmedBy: actor,
       });
-      return ok(bumped(next), [{ type: "sigilConfirmed", id: pending.id }]);
+      if (next.phase === "tutorial") (next.tutorialObjectives ??= {}).approvedSigil = true;
+      const leftConf = tryLeaveTutorial(next, context);
+      const confEffect = { type: "sigilConfirmed", id: pending.id };
+      return ok(bumped(next), leftConf ? [confEffect, ...leftConf] : [confEffect]);
     }
 
     case "sigil:reject": {
@@ -244,21 +341,47 @@ export function reduce(revision, op, actor, context = {}) {
       next.commitments = { A: null, B: null };
 
       if (next.phase === "tutorial") {
-        // Unscored: show the outcome inline, stay in the exercise.
+        // Unscored: show the outcome inline, stay in the exercise. Committing the
+        // same fingerprint (whatever the word) proves the pair reached a shared
+        // guess, so it satisfies the checklist.
+        if (agree) (next.tutorialObjectives ??= {}).matchedGuess = true;
         next.lastOutcome = { status: outcome.status, tutorial: true, tutorialIndex: next.tutorialIndex, agree };
-        return ok(bumped(next), [{ type: "resolved", status: outcome.status, tutorial: true }]);
+        const leftGuess = tryLeaveTutorial(next, context);
+        const resEffect = { type: "resolved", status: outcome.status, tutorial: true };
+        return ok(bumped(next), leftGuess ? [resEffect, ...leftGuess] : [resEffect]);
       }
 
       const pi = next.puzzleIndex;
       next.attempts[pi] = (next.attempts[pi] ?? 0) + 1;
-      next.lastOutcome = { status: outcome.status, puzzleIndex: pi, attempt: next.attempts[pi], agree };
+      const stats = next.roundStats ?? (next.roundStats = emptyRoundStats());
+      if (stats.firstTryAgree === null && next.attempts[pi] === 1) stats.firstTryAgree = agree;
+
+      const rawPars = context.pars ?? { parTokens: Infinity, parMessages: Infinity };
+      const parTokens = Number.isFinite(rawPars.parTokens) ? rawPars.parTokens : null;
+      const parMessages = Number.isFinite(rawPars.parMessages) ? rawPars.parMessages : null;
+      // Scored from the append-only ledger, never from the live `messages`
+      // array (which retraction mutates).
+      next.lastOutcome = {
+        status: outcome.status, puzzleIndex: pi, attempt: next.attempts[pi], agree,
+        tokens: stats.tokensRaw, tokensExpanded: stats.tokensExpanded, messages: stats.messagesSent,
+        parTokens, parMessages,
+      };
       next.phase = "reveal";
       if (outcome.status === COMMITMENT_STATUS.SOLVED) {
-        const pars = context.pars ?? { parTokens: Infinity, parMessages: Infinity };
-        next.stars[pi] = scorePuzzle({
-          attempts: next.attempts[pi], messages: next.messages,
-          parTokens: pars.parTokens, parMessages: pars.parMessages,
-        }).stars;
+        const scored = computeStars({
+          attempts: next.attempts[pi],
+          tokens: stats.tokensRaw,
+          messages: stats.messagesSent,
+          parTokens: rawPars.parTokens,
+          parMessages: rawPars.parMessages,
+          firstTryAgree: stats.firstTryAgree === true,
+          sigilReuses: stats.sigilReuses,
+          confirmedSigils: next.sigils.confirmed.length,
+          byAuthor: stats.byAuthor,
+        });
+        next.stars[pi] = scored.stars;
+        next.lastOutcome.stars = scored.stars;
+        next.lastOutcome.breakdown = { ...scored.breakdown, parTokens, parMessages };
       }
       return ok(bumped(next), [{ type: "resolved", status: outcome.status }]);
     }
@@ -294,18 +417,12 @@ export function reduce(revision, op, actor, context = {}) {
       if (revision.phase !== "tutorial") return fail(revision, "There is nothing to confirm right now.");
       const next = structuredClone(revision);
       next.tutorialReadyVotes[actor] = p.vote;
-      if (next.tutorialReadyVotes.A && next.tutorialReadyVotes.B) {
-        next.tutorialReadyVotes = { A: false, B: false };
-        if (next.messages.length) archiveCurrentRound(next);
-        if (next.tutorialIndex + 1 < TUTORIAL_COUNT) {
-          beginRound(next, { tutorial: true, index: next.tutorialIndex + 1, context });
-          return ok(bumped(next), [{ type: "phase", phase: "tutorial", tutorialIndex: next.tutorialIndex }]);
-        }
-        next.tutorialIndex = TUTORIAL_COUNT;
-        beginRound(next, { tutorial: false, index: 0, context });
-        return ok(bumped(next), [{ type: "phase", phase: "puzzle", puzzleIndex: 0 }]);
-      }
-      return ok(bumped(next), [{ type: "readyVote", role: actor, vote: p.vote }]);
+      const left = tryLeaveTutorial(next, context);
+      if (left) return ok(bumped(next), left);
+      // Both may be ready but the checklist is not done yet — the vote stands
+      // and the round advances automatically once the last objective is met.
+      const blocked = next.tutorialReadyVotes.A && next.tutorialReadyVotes.B;
+      return ok(bumped(next), [{ type: blocked ? "readyBlocked" : "readyVote", role: actor, vote: p.vote }]);
     }
 
     case "level:advance": {
@@ -329,7 +446,8 @@ export function reduce(revision, op, actor, context = {}) {
         archiveCurrentRound(next);
         const nextIndex = next.puzzleIndex + 1;
         next.lastOutcome = null;
-        if (nextIndex >= PUZZLE_COUNT) {
+        const lastPuzzle = Math.min(next.puzzleCount ?? PUZZLE_COUNT, PUZZLE_COUNT);
+        if (nextIndex >= lastPuzzle) {
           next.phase = "complete";
           next.messages = [];
           return ok(bumped(next), [{ type: "phase", phase: "complete" }]);
@@ -360,15 +478,18 @@ export function reduce(revision, op, actor, context = {}) {
       next.tutorialIndex = TUTORIAL_COUNT;
       next.tutorialSkipVotes = { A: false, B: false };
       next.tutorialReadyVotes = { A: false, B: false };
+      next.tutorialObjectives = {};
       next.attempts = {};
       next.stars = {};
       next.commitments = { A: null, B: null };
       next.lastOutcome = null;
       if (p.keepLexicon) {
         next.sigils.pending = [];
+        // sigilUses carries over: the point of a kept lexicon is its history.
       } else {
         next.sigils = { confirmed: [], pending: [] };
         next.sigilCounter = 0;
+        next.sigilUses = {};
         next.archivedTranscripts = [];
       }
       beginRound(next, { tutorial: false, index: 0, context });

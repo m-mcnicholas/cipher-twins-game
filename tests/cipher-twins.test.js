@@ -101,3 +101,39 @@ test("tutorial and puzzle palettes only reference real icons", async () => {
     for (const id of paletteForPuzzle(tier)) assert.ok(iconIds.has(id), `${id} exists`);
   }
 });
+
+test("the redundant category icons are gone, replaced by letter-form vocabulary", async () => {
+  const { paletteForPuzzle } = await import("../core/palette.js");
+  assert.equal(Object.keys(ICONS).some((id) => id.startsWith("cat:")), false, "no category icons remain");
+  const full = new Set(paletteForPuzzle(TIER_LENGTHS.length - 1));
+  for (const id of ["form:enclosed", "form:open", "form:vowel", "form:upright", "form:wide", "form:echo"]) {
+    assert.ok(ICONS[id] && ICONS[id].group === "Letter form", `${id} is a Letter form icon`);
+    assert.ok(full.has(id), `${id} unlocks by the end of the campaign`);
+  }
+});
+
+test("the ambiguity analyzer counts consistent candidates per seat", async () => {
+  const { ambiguityFor, visiblePositions } = await import("../scripts/analyze-ambiguity.mjs");
+  assert.deepEqual(visiblePositions("odd", 5), [1, 3, 5]);
+  assert.deepEqual(visiblePositions("even", 5), [2, 4]);
+
+  // BEAR: odd seat sees B_A_ (pos 1,3); even seat sees _E_R (pos 2,4).
+  const bankPool = [
+    { word: "BEAR", category: "animal", length: 4 },
+    { word: "BEAD", category: "object", length: 4 }, // wrong category -> ignored by the bank count
+    { word: "BOAR", category: "animal", length: 4 }, // shares BEAR's odd half
+  ];
+  const dict = new Map([[4, ["BEAR", "BEAD", "BEAK", "BOAR", "REAR", "GEAR"]]]);
+  const amb = ambiguityFor("BEAR", "animal", bankPool, dict);
+
+  assert.equal(amb.bankOdd, 1, "BOAR shares B_A_");
+  assert.equal(amb.bankEven, 0);
+  assert.equal(amb.dictOdd, 3, "BEAD, BEAK, BOAR all match B_A_");
+  assert.equal(amb.dictEven, 2, "REAR, GEAR match _E_R");
+  assert.equal(amb.asymmetry, 1);
+  assert.equal(amb.trivialSeat, null);
+
+  // A word only one dict word matches on a seat -> that seat is trivial.
+  const dict2 = new Map([[4, ["BEAR", "GEAR"]]]);
+  assert.equal(ambiguityFor("BEAR", "animal", [], dict2).trivialSeat, "odd", "nothing else fits B_A_");
+});

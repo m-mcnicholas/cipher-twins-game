@@ -11,7 +11,8 @@ import {
   paletteForPuzzle, fullPalette, isMonotonicUnlock, assertMonotonicSchedule,
   ownershipForPuzzle, positionsForParity,
 } from "../core/palette.js";
-import { computeStars, scorePuzzle, countTokens } from "../core/scoring.js";
+import { computeStars, scorePuzzle, countTokens, expandedTokenCount } from "../core/scoring.js";
+import { identityFor, tokenSignature, SIGIL_GLYPH_COUNT } from "../core/sigil-identity.js";
 import {
   validateOperation, validateBroadcast, containsForbiddenKey,
 } from "../core/messages.js";
@@ -43,15 +44,37 @@ function opCtx(revision) {
   return operationContext(revision, "A");
 }
 
+// Complete the current tutorial's checklist through the reducer, so a
+// tutorial:readyVote is actually allowed to advance.
+function completeTutorialObjectives(rev, c) {
+  const idx = rev.tutorialIndex;
+  const cc = { ...c, newId: makeIdFactory() };
+  const cid = (who) => `${who}-obj-t${idx}`; // unique per tutorial so it isn't seen as a duplicate
+  if (idx === 0) {
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("A"), tokens: [{ kind: "icon", id: "shape:line" }], replyTo: null } }, "A", cc).revision;
+    const firstId = rev.messages[0].id;
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("B"), tokens: [{ kind: "icon", id: "meta:confirm" }], replyTo: firstId } }, "B", cc).revision;
+    rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "A", cc).revision;
+    rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "B", cc).revision;
+  } else {
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("A"), tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", cc).revision;
+    rev = reduce(rev, { type: "sigil:propose", payload: { clientId: `A-objp-t${idx}`, sourceMessageId: rev.messages[0].id } }, "A", cc).revision;
+    const sid = rev.sigils.pending[0].id;
+    rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: sid } }, "B", cc).revision;
+    rev = reduce(rev, { type: "message:send", payload: { clientId: cid("B"), tokens: [{ kind: "sigil", id: sid }] } }, "B", cc).revision;
+  }
+  return rev;
+}
+
 // Drive a revision from lobby to the start of puzzle `index` with the reducer.
+// Uses the mutual skip vote (the by-design bypass) so callers that don't care
+// about tutorials aren't coupled to the checklist.
 function advanceToPuzzle(index, over = {}) {
   let rev = createInitialRevision({ roomCode: "ROOMAAA", ownershipSeed: 0 });
   const c = ctx(over);
   rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
   for (let i = 0; i < index; i += 1) {
     // force a solve so advance is permitted
     rev.phase = "reveal";
@@ -136,22 +159,137 @@ test("letter ownership alternates parity every puzzle from the random seed", () 
 
 // -------------------------------------------------------------- scoring
 
-test("efficiency stars follow the par thresholds", () => {
+test("stars reward first-try agreement and leaning on the shared language", () => {
   const pars = { parTokens: 10, parMessages: 4 };
-  assert.equal(computeStars({ attempts: 1, tokens: 10, messages: 4, ...pars }).stars, 3);
-  assert.equal(computeStars({ attempts: 1, tokens: 11, messages: 4, ...pars }).stars, 2);
-  assert.equal(computeStars({ attempts: 2, tokens: 15, messages: 6, ...pars }).stars, 2);
-  assert.equal(computeStars({ attempts: 3, tokens: 10, messages: 4, ...pars }).stars, 1);
-  assert.equal(computeStars({ attempts: 1, tokens: 16, messages: 4, ...pars }).stars, 1);
+
+  // First-try match while reusing a saved sigil -> 3, regardless of volume.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 2, confirmedSigils: 3, tokens: 40, messages: 12, ...pars }).stars, 3);
+
+  // Early puzzle, no language yet, first-try match within slack -> 3.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 0, confirmedSigils: 0, tokens: 12, messages: 4, ...pars }).stars, 3);
+  // ...but blowing well past par with no language to show for it -> 2.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 0, confirmedSigils: 0, tokens: 30, messages: 9, ...pars }).stars, 2);
+
+  // A first-try solve with a language that went unused this round -> 2.
+  assert.equal(computeStars({ attempts: 1, firstTryAgree: true, sigilReuses: 0, confirmedSigils: 4, tokens: 8, messages: 3, ...pars }).stars, 2);
+
+  // Agreed-wrong first, then corrected -> 2. Three+ attempts -> 1.
+  assert.equal(computeStars({ attempts: 2, firstTryAgree: true, sigilReuses: 1, confirmedSigils: 2, tokens: 8, messages: 3, ...pars }).stars, 2);
+  assert.equal(computeStars({ attempts: 3, firstTryAgree: false, sigilReuses: 5, confirmedSigils: 2, tokens: 8, messages: 3, ...pars }).stars, 1);
+
+  // Solved first try but the two never actually matched on attempt 1
+  // (mismatch then match counts as two attempts) -> 2, not 3.
+  assert.equal(computeStars({ attempts: 2, firstTryAgree: false, sigilReuses: 2, confirmedSigils: 2, tokens: 8, messages: 3, ...pars }).stars, 2);
 });
 
-test("a sigil token counts once regardless of how many icons it expands to", () => {
+test("a sigil token counts once for volume, its icons for weight", () => {
   const messages = [
     { tokens: [{ kind: "icon", id: "shape:line" }, { kind: "sigil", id: "sigil-1" }] },
     { tokens: [{ kind: "sigil", id: "sigil-1" }] },
   ];
-  assert.equal(countTokens(messages), 3);
-  assert.equal(scorePuzzle({ attempts: 1, messages, parTokens: 3, parMessages: 2 }).stars, 3);
+  assert.equal(countTokens(messages), 3, "a sigil is one token for raw volume");
+  const confirmed = [{ id: "sigil-1", tokens: [{ kind: "icon", id: "a:1" }, { kind: "icon", id: "a:2" }] }];
+  assert.equal(expandedTokenCount(messages[0].tokens, confirmed), 3, "and its icons where weight is wanted");
+});
+
+test("expandedTokenCount weighs a sigil as the icons it stands for", () => {
+  const confirmed = [{ id: "sigil-1", tokens: [{ kind: "icon", id: "a:1" }, { kind: "icon", id: "a:2" }, { kind: "icon", id: "a:3" }] }];
+  assert.equal(expandedTokenCount([{ kind: "icon", id: "a:1" }, { kind: "sigil", id: "sigil-1" }], confirmed), 4);
+  assert.equal(expandedTokenCount([{ kind: "sigil", id: "sigil-missing" }], confirmed), 1, "an unknown sigil id falls back to 1");
+  assert.equal(expandedTokenCount([], confirmed), 0);
+});
+
+test("the scoring ledger counts every sent card, even after it is retracted", () => {
+  const { rev: start, c } = advanceToPuzzle(0);
+  const pars = { parTokens: 6, parMessages: 2 };
+  let rev = start;
+  const send = (clientId, tokens, actor) =>
+    reduce(rev, { type: "message:send", payload: { clientId, tokens, replyTo: null } }, actor, c).revision;
+  rev = send("A-1", [{ kind: "icon", id: "shape:line" }], "A");
+  rev = send("A-2", [{ kind: "icon", id: "shape:curve" }], "A");
+  rev = send("B-1", [{ kind: "icon", id: "count:2" }], "B");
+  assert.equal(rev.roundStats.messagesSent, 3);
+  assert.deepEqual(rev.roundStats.byAuthor, { A: 2, B: 1 });
+
+  // A retracts both of its cards.
+  for (const id of rev.messages.filter((m) => m.author === "A").map((m) => m.id)) {
+    rev = reduce(rev, { type: "message:retract", payload: { messageId: id } }, "A", c).revision;
+  }
+  assert.equal(rev.messages.length, 1, "the transcript shrinks");
+  assert.equal(rev.roundStats.messagesSent, 3, "the ledger does not");
+
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "A", c).revision;
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "B", { ...c, localGuessCorrect: true, pars }).revision;
+  // 3 sent cards is over parMessages 2 -> the retract trick cannot buy back 3 stars.
+  assert.equal(rev.stars[rev.puzzleIndex], 2);
+  assert.equal(rev.lastOutcome.messages, 3);
+  assert.equal(rev.lastOutcome.stars, 2);
+  assert.equal(rev.lastOutcome.breakdown.withinPar, false);
+});
+
+test("roundStats resets when a new round begins", () => {
+  const { rev: start, c } = advanceToPuzzle(0);
+  let rev = reduce(start, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:line" }], replyTo: null } }, "A", c).revision;
+  assert.equal(rev.roundStats.messagesSent, 1);
+  rev.phase = "reveal";
+  rev.lastOutcome = { status: COMMITMENT_STATUS.SOLVED, puzzleIndex: 0, attempt: 1, agree: true };
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "reveal", fromIndex: 0 } }, "A", c).revision;
+  assert.equal(rev.puzzleIndex, 1);
+  assert.deepEqual(rev.roundStats, {
+    messagesSent: 0, tokensRaw: 0, tokensExpanded: 0, byAuthor: { A: 0, B: 0 }, sigilReuses: 0, firstTryAgree: null,
+  });
+});
+
+// ------------------------------------------------------ sigil identity
+
+test("a sigil's look is a pure, stable function of the icons it stands for", () => {
+  const a = [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }];
+  const b = [{ kind: "icon", id: "count:2" }, { kind: "icon", id: "shape:loop" }]; // order matters
+  assert.deepEqual(identityFor(a), identityFor(a), "deterministic");
+  assert.notDeepEqual(identityFor(a), identityFor(b), "reordered icons read as a different sigil");
+  const id = identityFor(a);
+  assert.ok(id.glyphIndex >= 0 && id.glyphIndex < SIGIL_GLYPH_COUNT);
+  assert.ok(id.hue >= 0 && id.hue < 360);
+  assert.equal(tokenSignature(a), "icon:shape:loop|icon:count:2");
+
+  // reasonable spread: many distinct sequences do not all collapse to one glyph
+  const glyphs = new Set();
+  for (let i = 0; i < 60; i += 1) {
+    glyphs.add(identityFor([{ kind: "icon", id: `x:${i}` }, { kind: "icon", id: "y:1" }]).glyphIndex);
+  }
+  assert.ok(glyphs.size >= 6, `saw ${glyphs.size} distinct glyphs across 60 sequences`);
+});
+
+test("sigilUses counts reuse in a card, not proposing or confirming, and survives a new round", () => {
+  const { rev: start, c } = advanceToPuzzle(0);
+  let rev = reduce(start, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-2", sourceMessageId: rev.messages[0].id } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: "sigil-1" } }, "B", c).revision;
+  assert.deepEqual(rev.sigilUses, {}, "confirming a sigil is not a use");
+
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "B-1", tokens: [{ kind: "sigil", id: "sigil-1" }, { kind: "sigil", id: "sigil-1" }] }, }, "B", c).revision;
+  assert.equal(rev.sigilUses["sigil-1"], 2, "two sigil tokens in one card count twice");
+
+  // advancing to the next puzzle keeps the cumulative count
+  rev.phase = "reveal";
+  rev.lastOutcome = { status: COMMITMENT_STATUS.SOLVED, puzzleIndex: 0, attempt: 1, agree: true };
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "reveal", fromIndex: 0 } }, "A", c).revision;
+  assert.equal(rev.sigilUses["sigil-1"], 2, "sigilUses is cumulative across the run");
+  assert.equal(rev.roundStats.sigilReuses, 0, "but the per-round reuse counter reset");
+});
+
+test("a fresh rematch wipes sigilUses; keeping the lexicon preserves it", () => {
+  let rev = createInitialRevision();
+  rev.phase = "complete";
+  rev.sigils.confirmed = [{ id: "sigil-1", alias: "Sigil 1", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], proposedBy: "A", confirmedBy: "B" }];
+  rev.sigilUses = { "sigil-1": 5 };
+  const c = ctx();
+
+  const kept = reduce(rev, { type: "session:rematch", payload: { keepLexicon: true } }, "A", c).revision;
+  assert.equal(kept.sigilUses["sigil-1"], 5, "kept language keeps its history");
+
+  const fresh = reduce(rev, { type: "session:rematch", payload: { keepLexicon: false } }, "A", c).revision;
+  assert.deepEqual(fresh.sigilUses, {}, "fresh start clears it");
 });
 
 // ------------------------------------------------------ protocol schemas
@@ -250,6 +388,19 @@ test("a sigil needs the proposer's own message plus the partner's confirmation",
   assert.ok(sendWithSigil);
 });
 
+test("a sigil cannot be built from another sigil", () => {
+  let rev = advanceToPuzzle(0).rev;
+  const c = ctx();
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-2", sourceMessageId: rev.messages[0].id } }, "A", c).revision;
+  rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: "sigil-1" } }, "B", c).revision;
+
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-3", tokens: [{ kind: "sigil", id: "sigil-1" }, { kind: "icon", id: "shape:dot" }], replyTo: null } }, "A", c).revision;
+  const nested = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-4", sourceMessageId: rev.messages.at(-1).id } }, "A", c);
+  assert.equal(nested.ok, false);
+  assert.match(nested.error, /another sigil/);
+});
+
 test("rejected sigil numbers are burned, never reused", () => {
   let rev = advanceToPuzzle(0).rev;
   const c = ctx();
@@ -283,6 +434,13 @@ test("an attempt counts once, when both commitments have resolved", () => {
   assert.equal(rev.phase, "reveal");
   assert.equal(rev.lastOutcome.status, COMMITMENT_STATUS.SOLVED);
   assert.equal(rev.stars[pi], 3);
+  // the reveal screen (WP-2) reads its scorecard straight off lastOutcome
+  assert.equal(rev.lastOutcome.tokens, 0);
+  assert.equal(rev.lastOutcome.messages, 0);
+  assert.equal(rev.lastOutcome.parTokens, 20);
+  assert.equal(rev.lastOutcome.parMessages, 8);
+  assert.equal(rev.lastOutcome.stars, 3);
+  assert.equal(rev.lastOutcome.breakdown.withinPar, true);
   assert.deepEqual(rev.commitments, { A: null, B: null }, "commitments are cleared after resolving");
 });
 
@@ -330,8 +488,12 @@ test("advance is idempotent and only leaves a reveal once the puzzle is solved",
   assert.equal(ignored.revision.phase, "tutorial");
 
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  assert.equal(rev.tutorialIndex, 0, "one confirmation is not enough");
+  assert.equal(rev.phase, "tutorial", "one confirmation is not enough");
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.tutorialIndex, 0, "both ready, but the checklist is unfinished — still here");
+  rev = completeTutorialObjectives(rev, c);   // both are already ready -> auto-advances
+  assert.equal(rev.tutorialIndex, 1, "checklist done -> next tutorial");
+  rev = completeTutorialObjectives(rev, c);
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
   assert.equal(rev.phase, "puzzle");
@@ -363,6 +525,28 @@ test("every puzzle transition keeps the palette monotonic and flips ownership", 
   assert.equal(rev.phase, "complete");
 });
 
+test("a quick game finishes after its shorter puzzle count", () => {
+  let rev = createInitialRevision({ puzzleCount: 3 });
+  assert.equal(rev.puzzleCount, 3);
+  const c = ctx();
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.puzzleIndex, 0);
+  for (let i = 0; i < 3; i += 1) {
+    rev.phase = "reveal";
+    rev.lastOutcome = { status: COMMITMENT_STATUS.SOLVED, puzzleIndex: i, attempt: 1, agree: true };
+    rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "reveal", fromIndex: i } }, "A", c).revision;
+  }
+  assert.equal(rev.phase, "complete", "three solves ends a quick game");
+});
+
+test("puzzleCount is clamped to the real campaign length", () => {
+  assert.equal(createInitialRevision({ puzzleCount: 99 }).puzzleCount, PUZZLE_COUNT);
+  assert.equal(createInitialRevision({ puzzleCount: 0 }).puzzleCount, PUZZLE_COUNT);
+  assert.equal(createInitialRevision({}).puzzleCount, PUZZLE_COUNT);
+});
+
 test("a tutorial guess resolves inline without scoring or leaving the exercise", () => {
   let rev = createInitialRevision();
   const c = ctx();
@@ -390,14 +574,57 @@ test("a unanimous skip vote jumps straight to the first puzzle", () => {
   assert.equal(rev.puzzleIndex, 0);
 });
 
-test("both players must confirm a tutorial step before it advances", () => {
+test("a tutorial needs both readiness votes AND its checklist before it advances", () => {
   let rev = createInitialRevision();
   const c = ctx();
   rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+
+  // Both say they're ready, but nothing has been done yet.
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
-  assert.equal(rev.tutorialIndex, 0, "one confirmation is not enough");
+  const blocked = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c);
+  assert.equal(blocked.revision.tutorialIndex, 0, "mutual readiness is not enough on its own");
+  assert.ok(blocked.effects.some((e) => e.type === "readyBlocked"), "the UI is told the checklist is blocking");
+  rev = blocked.revision;
+
+  // Work the checklist: send a card, reply to the partner, match a fingerprint.
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-1", tokens: [{ kind: "icon", id: "shape:line" }], replyTo: null } }, "A", c).revision;
+  assert.deepEqual(rev.tutorialObjectives, { sentCard: true });
+  const firstId = rev.messages[0].id;
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "B-1", tokens: [{ kind: "icon", id: "meta:confirm" }], replyTo: firstId } }, "B", c).revision;
+  assert.equal(rev.tutorialObjectives.repliedToPartner, true);
+  assert.equal(rev.phase, "tutorial", "still here — the guess objective is outstanding");
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "A", c).revision;
+  // The final objective lands while both votes still stand -> auto-advance.
+  rev = reduce(rev, { type: "guess:commit", payload: { commitment: HEX_A } }, "B", c).revision;
+  assert.equal(rev.tutorialIndex, 1, "checklist complete + both ready -> next tutorial");
+
+  // A replying to their own card does not count as replying to the partner.
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-2", tokens: [{ kind: "icon", id: "shape:loop" }, { kind: "icon", id: "count:2" }], replyTo: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "A-3", tokens: [{ kind: "icon", id: "shape:dot" }], replyTo: rev.messages[0].id } }, "A", c).revision;
+  assert.equal(rev.tutorialObjectives.repliedToPartner, undefined);
+
+  // Tutorial 2: propose, approve, reuse.
+  rev = reduce(rev, { type: "sigil:propose", payload: { clientId: "A-4", sourceMessageId: rev.messages[0].id } }, "A", c).revision;
+  assert.equal(rev.tutorialObjectives.proposedSigil, true);
+  const sid = rev.sigils.pending[0].id;
+  rev = reduce(rev, { type: "sigil:confirm", payload: { sigilId: sid } }, "B", c).revision;
+  assert.equal(rev.tutorialObjectives.approvedSigil, true);
+  rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "A", c).revision;
   rev = reduce(rev, { type: "tutorial:readyVote", payload: { vote: true } }, "B", c).revision;
-  assert.equal(rev.tutorialIndex, 1);
+  assert.equal(rev.phase, "tutorial", "reuse still missing");
+  rev = reduce(rev, { type: "message:send", payload: { clientId: "B-2", tokens: [{ kind: "sigil", id: sid }] } }, "B", c).revision;
+  assert.equal(rev.phase, "puzzle", "reusing the sigil finishes the checklist and both were ready");
+  assert.equal(rev.puzzleIndex, 0);
+});
+
+test("a mutual skip vote bypasses the tutorial checklist entirely", () => {
+  let rev = createInitialRevision();
+  const c = ctx();
+  rev = reduce(rev, { type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "A", c).revision;
+  rev = reduce(rev, { type: "tutorial:skipVote", payload: { vote: true } }, "B", c).revision;
+  assert.equal(rev.phase, "puzzle");
+  assert.equal(rev.puzzleIndex, 0);
 });
 
 test("keep-lexicon rematch retains sigils, archives, and opens the full palette", () => {
@@ -540,6 +767,27 @@ test("paired flow: tutorials, a reply, a reused sigil, and a correct solve", asy
   assert.equal(host.revision.lastOutcome.status, COMMITMENT_STATUS.SOLVED);
   assert.equal(host.revision.stars[0], 3);
   assert.equal(client.revision.stars[0], 3);
+});
+
+test("paired flow: presence is relayed to the partner without a version bump", () => {
+  const { channel, host, client, secretsSeen } = pairedSession();
+  host.dispatchLocal({ type: "level:advance", payload: { fromPhase: "lobby", fromIndex: null } });
+  host.dispatchLocal({ type: "tutorial:skipVote", payload: { vote: true } });
+  client.send("tutorial:skipVote", { vote: true });
+  channel.flush();
+  const settledVersion = host.revision.version;
+
+  client.send("presence:update", { composing: true, guessReady: false });
+  channel.flush();
+  assert.equal(host.revision.presence.B.composing, true);
+  assert.equal(client.revision.presence.B.composing, true, "the joiner sees its own relayed presence");
+  assert.equal(host.revision.version, settledVersion, "presence does not bump the version");
+
+  host.dispatchLocal({ type: "presence:update", payload: { composing: false, guessReady: true } });
+  channel.flush();
+  assert.equal(client.revision.presence.A.guessReady, true, "the joiner sees the host's presence");
+  assert.equal(host.revision.version, settledVersion);
+  for (const entry of secretsSeen) assert.equal(containsForbiddenKey(entry.message), false);
 });
 
 test("paired flow: simultaneous messages are serialised, never interleaved", () => {

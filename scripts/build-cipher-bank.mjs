@@ -20,8 +20,25 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const wordsDir = resolve(import.meta.dirname, "../words");
+
+// The campaign still tiers by word length. `npm run analyze:ambiguity` shows
+// this is backwards for *guessing* difficulty: tier 0 (4-letter) averages ~20
+// candidate words per seat, while tier 6 (8-letter) averages ~0.6 and one seat
+// can solo 11 of its 12 words with no communication at all. Re-tiering by
+// per-seat ambiguity instead of length is design-review WP-6, but doing it
+// deterministically needs a committed common-word list (so generation doesn't
+// depend on a machine's /usr/share/dict/words) plus WP-3 playtest data to
+// calibrate the tiers. Until then this stays length-based and the analyzer is a
+// standalone diagnostic — see scripts/ambiguity-findings.md.
 const TIER_LENGTHS = [4, 4, 5, 5, 6, 7, 8]; // one scored puzzle per tier
 const PER_TIER = 12;
+// NOTE: the tutorials are now objective-gated (a pair can't leave until they've
+// actually sent a card, replied, matched a guess, and proposed/approved/reused a
+// sigil — see TUTORIAL_OBJECTIVES in core/revision.js), which is the main
+// defence against "solvable before you communicate". These two words should
+// still be re-checked for ambiguity in BOTH parity views once WP-6's
+// scripts/analyze-ambiguity.mjs exists, and swapped if either half plus the
+// category pins the answer immediately.
 const TUTORIALS = [
   { slot: 0, word: "FISH" }, // teaches composing / sending / replying / private agreement
   { slot: 1, word: "LAMP" }, // teaches proposing / confirming / reusing a sigil
