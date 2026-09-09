@@ -12,7 +12,8 @@ function svg(inner) {
 
 function tally(n) {
   let marks = "";
-  for (let i = 0; i < n; i++) {
+  // Five is four upright strokes crossed by the fifth stroke.
+  for (let i = 0; i < Math.min(n, 4); i++) {
     const x = 5 + i * 3.6;
     marks += `<line x1="${x}" y1="5" x2="${x}" y2="19" />`;
   }

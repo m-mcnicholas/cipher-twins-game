@@ -744,9 +744,11 @@ for (const [id, drawer] of DRAWERS) {
       if (otherDrawer === drawer) continue;
       $(otherDrawer).hidden = true;
       $(otherId).setAttribute("aria-expanded", "false");
+      $(otherId).textContent = otherDrawer === "palette-drawer" ? "Icons" : "Sigils";
     }
     el.hidden = !opening;
     $(id).setAttribute("aria-expanded", String(opening));
+    $(id).textContent = `${opening ? "Hide " : ""}${drawer === "palette-drawer" ? "Icons" : "Sigils"}`;
     if (opening) requestAnimationFrame(() => el.querySelector("button, [tabindex]")?.focus());
   });
 }
@@ -754,7 +756,12 @@ for (const [id, drawer] of DRAWERS) {
 function closeDrawers(returnFocusToId) {
   let closedAny = false;
   for (const [id, drawer] of DRAWERS) {
-    if (!$(drawer).hidden) { $(drawer).hidden = true; $(id).setAttribute("aria-expanded", "false"); closedAny = true; }
+    if (!$(drawer).hidden) {
+      $(drawer).hidden = true;
+      $(id).setAttribute("aria-expanded", "false");
+      $(id).textContent = drawer === "palette-drawer" ? "Icons" : "Sigils";
+      closedAny = true;
+    }
   }
   if (closedAny && returnFocusToId) $(returnFocusToId)?.focus();
   return closedAny;
@@ -783,6 +790,7 @@ function renderPaletteDrawer(r) {
       button.addEventListener("click", () => {
         state.composer.tokens.push({ kind: "icon", id });
         renderComposer(r);
+        $("composer-tray").scrollTop = $("composer-tray").scrollHeight;
       });
       row.append(button);
     }
@@ -819,6 +827,7 @@ function renderLexicon(r) {
     insert.addEventListener("click", () => {
       state.composer.tokens.push({ kind: "sigil", id: sigil.id });
       renderComposer(r);
+      $("composer-tray").scrollTop = $("composer-tray").scrollHeight;
     });
     wrap.append(label, preview, insert);
     confirmed.append(wrap);

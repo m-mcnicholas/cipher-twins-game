@@ -26,6 +26,8 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
+  /* Repeated taps compose tokens; keep scrolling and pinch zoom available. */
+  touch-action: manipulation;
 }
 
 a { color: inherit; }
@@ -329,6 +331,7 @@ main#app {
 .palette-icon:hover:not(:disabled) { border-color: var(--text-dim); background: var(--bg-panel-raised); }
 .palette-icon:disabled { opacity: 0.35; cursor: default; }
 .palette-icon .icon-render { width: 26px; height: 26px; }
+.palette-icon > svg { width: 26px; height: 26px; flex: none; }
 .palette-icon .icon-label { font-size: 0.62rem; text-align: center; color: var(--text-dim); line-height: 1.2; }
 
 /* icons generic */
@@ -595,6 +598,7 @@ main#app {
   font-size: 0.78rem;
   margin: 0 0 8px;
 }
+.reply-chip[hidden] { display: none; }
 
 .composer-tray {
   min-height: 54px;
@@ -718,7 +722,38 @@ main#app {
     z-index: 2;
     border-top: 1px solid var(--border);
   }
-  .drawer { max-height: 50vh; }
+  /* An open picker shares a compact bottom panel with the draft and actions.
+     Only the picker and long drafts scroll, so selecting an icon never hides
+     the message being composed or its Send button. */
+  .composer-section:has(> .drawer:not([hidden])) {
+    position: fixed;
+    inset: auto 8px 0;
+    width: auto;
+    max-height: calc(100dvh - 16px);
+    display: flex;
+    flex-direction: column;
+    padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 30px #0006;
+    z-index: 4;
+  }
+  .composer-section:has(> .drawer:not([hidden])) > :not(.drawer) { flex-shrink: 0; }
+  .composer-section:has(> .drawer:not([hidden])) .composer-tray {
+    max-height: 20dvh;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+  .composer-section:has(> .drawer:not([hidden])) .composer-actions {
+    position: static;
+    padding: 8px 0 0;
+  }
+  .composer-section .drawer {
+    min-height: 0;
+    max-height: 30dvh;
+    overscroll-behavior-y: contain;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
