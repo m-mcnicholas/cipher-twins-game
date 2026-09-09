@@ -9,12 +9,17 @@
 
 import { Room } from "./network.js";
 import { GameHost, GameClient } from "./core/session.js";
-import { createInitialRevision, snapshot, fromSnapshot } from "./core/revision.js";
+import {
+  createInitialRevision, snapshot, fromSnapshot,
+  TUTORIAL_OBJECTIVES, tutorialObjectivesMet,
+} from "./core/revision.js";
+import { PUZZLE_COUNT } from "./core/palette.js";
 import {
   deriveSalt, commitmentFor, guessIsCorrect, normalizeGuess,
   COMMITMENT_STATUS, COMMITMENT_MESSAGES,
 } from "./core/commitments.js";
-import { ICONS, ICON_GROUPS, renderIcon } from "./icons.js";
+import { ICONS, ICON_GROUPS, renderIcon, renderSigilGlyph } from "./icons.js";
+import { identityFor } from "./core/sigil-identity.js";
 import { ACTIVE_WORDS, TIER_LENGTHS } from "./words/bank.js";
 
 const $ = (id) => document.getElementById(id);
@@ -35,6 +40,10 @@ const state = {
   lastRenderedWordId: null,
   lastAnnouncedMessageId: null,
   lastPhaseKey: null,
+  knownPaletteIds: null,   // Set of icon ids seen last round, for "new icon" cues
+  justUnlockedIds: [],
+  tutorialDoneSeen: null,  // { key, set } — which checklist steps we've already announced
+  puzzleCount: PUZZLE_COUNT, // host's chosen game length; 3 for a quick game
   recovering: null,
   demo: false,
 };
@@ -52,6 +61,7 @@ function announce(text) {
 
 const rev = () => state.host?.revision ?? state.client?.revision ?? null;
 const partnerRole = () => (state.role === "A" ? "B" : "A");
+const puzzleTotal = (r) => (Number.isInteger(r?.puzzleCount) ? r.puzzleCount : PUZZLE_COUNT);
 
 function act(type, payload = {}) {
   if (state.demo) return; // the scripted demo drives both sides itself
@@ -67,12 +77,19 @@ function newClientId() {
 
 // ---- host word selection ------------------------------------------------
 
-function makeHostWordSource(alreadyUsed = []) {
+function makeHostWordSource(alreadyUsed = [], puzzleCount = PUZZLE_COUNT) {
   const used = new Set(alreadyUsed);
   const parByIndex = {};
   let lastCategory = null;
 
   const stash = (key, meta) => { parByIndex[key] = { parTokens: meta.parTokens, parMessages: meta.parMessages }; };
+
+  // A quick (3-puzzle) game samples tiers across the whole difficulty range
+  // instead of just the first three, so it still ramps.
+  const tierFor = (index) => {
+    if (puzzleCount >= PUZZLE_COUNT || puzzleCount <= 1) return index;
+    return Math.round((index * (PUZZLE_COUNT - 1)) / (puzzleCount - 1));
+  };
 
   const nextWord = ({ tutorial, index, runNumber }) => {
     if (tutorial) {
@@ -81,7 +98,7 @@ function makeHostWordSource(alreadyUsed = []) {
       stash(`t${index}`, w);
       return { wordId: w.id, wordLength: w.length, category: w.category };
     }
-    const tier = index;
+    const tier = tierFor(index);
     let pool = ACTIVE_WORDS.filter((a) => a.tier === tier && !used.has(a.id));
     if (!pool.length) pool = ACTIVE_WORDS.filter((a) => a.tier === tier);
     if (runNumber > 1) {
@@ -93,7 +110,7 @@ function makeHostWordSource(alreadyUsed = []) {
     const pick = choices[crypto.getRandomValues(new Uint32Array(1))[0] % choices.length];
     used.add(pick.id);
     lastCategory = pick.category;
-    stash(tier, pick);
+    stash(index, pick); // pars are looked up by puzzle index, which may differ from tier
     return { wordId: pick.id, wordLength: pick.length, category: pick.category };
   };
 
@@ -105,6 +122,8 @@ function makeHostWordSource(alreadyUsed = []) {
 
 $("host-room-btn").addEventListener("click", async () => {
   $("host-room-btn").disabled = true;
+  const lengthChoice = document.querySelector('input[name="game-length"]:checked')?.value;
+  state.puzzleCount = lengthChoice === "3" ? 3 : PUZZLE_COUNT;
   state.room = new Room();
   wireRoom();
   try {
@@ -233,11 +252,13 @@ function buildHost(code, revision) {
   const knownWordIds = revision
     ? [revision.wordId, ...revision.archivedTranscripts.map((t) => t.wordId)].filter(Boolean)
     : [];
-  const { nextWord, pars } = makeHostWordSource(knownWordIds);
+  const puzzleCount = revision?.puzzleCount ?? state.puzzleCount ?? PUZZLE_COUNT;
+  const { nextWord, pars } = makeHostWordSource(knownWordIds, puzzleCount);
   state.host = new GameHost(state.room, {
     revision: revision ?? createInitialRevision({
       roomCode: code,
       ownershipSeed: crypto.getRandomValues(new Uint8Array(1))[0],
+      puzzleCount,
     }),
     nextWord, pars, newId: hostNewId,
   });
@@ -390,19 +411,39 @@ async function maybeLoadLetters(r) {
   if (!slice) throw new Error(`No ${parity} slice for ${r.wordId}`);
   state.myLetters = new Map(slice.positions.map((pos, i) => [pos, slice.letters[i]]));
   state.lettersForWord = r.wordId;
-  state.myGuess = Array(r.wordLength).fill(null);
+  state.myGuess = freshGuess(r);
   state.composer = { tokens: [], replyTo: null };
 }
+
+// A blank guess with the player's own (already visible) letters pre-filled and
+// locked. They only ever need to type their partner's half.
+function freshGuess(r) {
+  const guess = Array(r.wordLength).fill(null);
+  for (const [pos, letter] of state.myLetters) {
+    if (pos >= 1 && pos <= r.wordLength) guess[pos - 1] = letter;
+  }
+  return guess;
+}
+
+const guessPositionLocked = (index) => state.myLetters.has(index + 1);
 
 // ---- top-level render ----------------------------------------------
 
 const TUTORIAL_TEXT = [
-  "Round one. Build a message by adding icons below, then send it as one card. "
-  + "Try replying to your partner's card, and when you both think you know the word, "
-  + "enter it privately and commit — you'll see whether your fingerprints matched.",
-  "Round two. This time, when one of your cards turns out to be useful, use “Save as sigil”. "
-  + "Your partner approves it and it becomes a numbered token you can both drop into any later message.",
+  "Round one. Work through the checklist together: send a card, reply to your partner, "
+  + "and land on the same private guess. You can leave once every step is ticked and you both say you're ready.",
+  "Round two. Turn a useful card into a saved sigil: one of you proposes it, the other approves it, "
+  + "then drop it into a new card. Finish the checklist and you're through.",
 ];
+
+const OBJECTIVE_LABELS = {
+  sentCard: "Send a card",
+  repliedToPartner: "Reply to your partner's card",
+  matchedGuess: "Both commit the same private guess",
+  proposedSigil: "Turn one of your cards into a sigil",
+  approvedSigil: "Approve your partner's sigil",
+  reusedSigil: "Drop a saved sigil into a new card",
+};
 
 function render() {
   const r = rev();
@@ -412,10 +453,15 @@ function render() {
   if (r.phase === "reveal") { renderReveal(r); showScreen("reveal"); return; }
   if (r.phase !== "puzzle" && r.phase !== "tutorial") { showScreen("connecting"); return; }
 
+  const phaseKey = `${r.phase}:${r.phase === "tutorial" ? r.tutorialIndex : r.puzzleIndex}`;
+  const roundChanged = phaseKey !== state.lastPhaseKey;
+  if (roundChanged) state.justUnlockedIds = newlyUnlocked(r);
+
   renderTopbar(r);
   renderTutorialBanner(r);
   renderRoundFacts(r);
   renderWordTrack(r);
+  renderPartnerPresence(r);
   renderConversation(r);
   renderArchive(r);
   renderComposer(r);
@@ -424,18 +470,72 @@ function render() {
   renderAnswer(r);
   showScreen("game");
 
-  const phaseKey = `${r.phase}:${r.phase === "tutorial" ? r.tutorialIndex : r.puzzleIndex}`;
-  if (phaseKey !== state.lastPhaseKey) {
+  if (roundChanged) {
     state.lastPhaseKey = phaseKey;
-    announce(r.phase === "tutorial" ? `Tutorial ${r.tutorialIndex + 1} of 2.` : `Puzzle ${r.puzzleIndex + 1} of 7.`);
+    const place = r.phase === "tutorial"
+      ? `Tutorial ${r.tutorialIndex + 1} of 2.`
+      : `Puzzle ${r.puzzleIndex + 1} of ${puzzleTotal(r)}.`;
+    const unlocked = state.justUnlockedIds.length
+      ? ` New icons unlocked: ${state.justUnlockedIds.map((id) => ICONS[id]?.label ?? id).join(", ")}.`
+      : "";
+    announce(place + unlocked);
   }
+}
+
+// Icon ids in the current palette that were not in the palette we last saw.
+// Returns [] the first time (nothing to celebrate) and after a keep-lexicon
+// rematch (which starts on the full palette).
+function newlyUnlocked(r) {
+  const current = r.unlockedPalette ?? [];
+  const known = state.knownPaletteIds;
+  state.knownPaletteIds = new Set(current);
+  if (!known) return [];
+  return current.filter((id) => !known.has(id));
+}
+
+// ---- partner presence ----------------------------------------------
+// The reducer already models { composing, guessReady } per role and the host
+// relays it out-of-band (core/session.js). We just debounce our own signal and
+// show the partner's.
+
+let presenceTimer = null;
+let lastPresenceSig = "";
+
+function pushPresence() {
+  const r = rev();
+  if (!r || state.demo) return;
+  const composing = state.composer.tokens.length > 0 || state.composer.replyTo != null;
+  const committed = r.commitments?.[state.role] != null;
+  const guessReady = committed
+    || (state.myGuess.length === r.wordLength && state.myGuess.length > 0 && state.myGuess.every(Boolean));
+  const sig = `${composing}|${guessReady}`;
+  if (sig === lastPresenceSig) return;
+  lastPresenceSig = sig;
+  act("presence:update", { composing, guessReady });
+}
+
+function schedulePresence() {
+  if (state.demo) return;
+  clearTimeout(presenceTimer);
+  presenceTimer = setTimeout(pushPresence, 200);
+}
+
+function renderPartnerPresence(r) {
+  const el = $("partner-presence");
+  if (!el) return;
+  const them = r.presence?.[partnerRole()] ?? {};
+  const text = them.composing ? `Player ${partnerRole()} is building a card…`
+    : them.guessReady ? `Player ${partnerRole()} is ready to guess.`
+    : "";
+  el.textContent = text;
+  el.hidden = !text;
 }
 
 function renderTopbar(r) {
   const isTut = r.phase === "tutorial";
   $("round-label").textContent = isTut ? "Tutorial" : "Puzzle";
   $("round-label").classList.toggle("round-label-tutorial", isTut);
-  $("round-number").textContent = isTut ? `${r.tutorialIndex + 1} / 2` : `${r.puzzleIndex + 1} / 7`;
+  $("round-number").textContent = isTut ? `${r.tutorialIndex + 1} / 2` : `${r.puzzleIndex + 1} / ${puzzleTotal(r)}`;
   const total = Object.values(r.stars).reduce((a, b) => a + b, 0);
   $("stars-indicator").textContent = total ? `★ ${total}` : "";
 }
@@ -445,17 +545,46 @@ function renderTutorialBanner(r) {
   if (r.phase !== "tutorial") { banner.hidden = true; return; }
   banner.hidden = false;
   $("tutorial-text").textContent = TUTORIAL_TEXT[r.tutorialIndex] ?? "";
+
+  const done = r.tutorialObjectives ?? {};
+  const required = TUTORIAL_OBJECTIVES[r.tutorialIndex] ?? [];
+  const allDone = tutorialObjectivesMet(r.tutorialIndex, done);
+  const listEl = $("tutorial-checklist");
+  listEl.replaceChildren();
+  for (const key of required) {
+    const li = document.createElement("li");
+    li.className = done[key] ? "checklist-item checklist-done" : "checklist-item";
+    li.textContent = `${done[key] ? "✓" : "○"} ${OBJECTIVE_LABELS[key] ?? key}`;
+    listEl.append(li);
+  }
+
+  // Announce a step the moment it flips to done.
+  const doneKeys = required.filter((k) => done[k]);
+  const prevKey = `${r.phase}:${r.tutorialIndex}`;
+  if (state.tutorialDoneSeen?.key === prevKey) {
+    for (const k of doneKeys) {
+      if (!state.tutorialDoneSeen.set.has(k)) announce(`Step done: ${OBJECTIVE_LABELS[k] ?? k}.`);
+    }
+  }
+  state.tutorialDoneSeen = { key: prevKey, set: new Set(doneKeys) };
+
   const myReady = r.tutorialReadyVotes?.[state.role];
   const theirReady = r.tutorialReadyVotes?.[partnerRole()];
   const mine = r.tutorialSkipVotes?.[state.role];
   const theirs = r.tutorialSkipVotes?.[partnerRole()];
   $("tutorial-skip-note").textContent =
-    myReady && !theirReady ? "Waiting for your partner to also say they've got it…"
-    : !myReady && theirReady ? "Your partner says they've got it — continue when you're ready."
+    myReady && theirReady && !allDone ? "You're both ready — finish the checklist above to continue."
+    : myReady && !theirReady ? "Waiting for your partner to also say they're ready…"
+    : !myReady && theirReady ? "Your partner is ready — say you're ready once the steps are done."
     : mine && !theirs ? "Waiting for your partner to also agree to skip…"
     : !mine && theirs ? "Your partner wants to skip the tutorials."
     : "";
-  $("tutorial-next").textContent = myReady ? "Waiting for partner…" : "I've got it — continue";
+
+  const nextBtn = $("tutorial-next");
+  nextBtn.disabled = !allDone;
+  nextBtn.textContent = !allDone ? "Finish the steps to continue"
+    : myReady ? "Waiting for partner…"
+    : "We're ready — continue";
 }
 
 $("tutorial-next").addEventListener("click", () => {
@@ -510,9 +639,19 @@ function tokenChip(token, r) {
     chip.title = icon?.label ?? token.id;
   } else {
     const sigil = r.sigils.confirmed.find((s) => s.id === token.id);
-    chip.textContent = sigil?.alias ?? token.id;
-    chip.setAttribute("aria-label", `${sigil?.alias ?? token.id}${sigil ? `, ${sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" then ")}` : ""}`);
-    if (sigil) chip.title = sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ");
+    const meaning = sigil ? sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ") : "";
+    if (sigil) {
+      const id = identityFor(sigil.tokens);
+      chip.style.setProperty("--sigil-hue", String(id.hue));
+      const badge = document.createElement("span");
+      badge.className = "sigil-badge";
+      badge.innerHTML = renderSigilGlyph(id.glyphIndex);
+      chip.append(badge, document.createTextNode(sigil.alias));
+    } else {
+      chip.textContent = token.id;
+    }
+    chip.setAttribute("aria-label", `${sigil?.alias ?? token.id}${meaning ? `, meaning ${meaning}` : ""}`);
+    if (sigil) chip.title = `${sigil.alias}: ${meaning}`;
   }
   return chip;
 }
@@ -707,6 +846,7 @@ function renderComposer(r) {
     replyChip.textContent = "";
   }
   updateSend();
+  schedulePresence();
 }
 
 function swap(i, j) {
@@ -783,7 +923,7 @@ function renderPaletteDrawer(r) {
     for (const id of ids) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "palette-icon";
+      button.className = state.justUnlockedIds.includes(id) ? "palette-icon just-unlocked" : "palette-icon";
       button.title = ICONS[id].label;
       button.setAttribute("aria-label", `Add ${ICONS[id].label}`);
       button.innerHTML = `${renderIcon(id)}<span class="icon-label">${ICONS[id].label}</span>`;
@@ -814,9 +954,21 @@ function renderLexicon(r) {
   for (const sigil of r.sigils.confirmed) {
     const wrap = document.createElement("div");
     wrap.className = "sigil-row";
+    const ident = identityFor(sigil.tokens);
+    wrap.style.setProperty("--sigil-hue", String(ident.hue));
     const label = document.createElement("span");
     label.className = "sigil-alias";
-    label.textContent = sigil.alias;
+    const badge = document.createElement("span");
+    badge.className = "sigil-badge";
+    badge.innerHTML = renderSigilGlyph(ident.glyphIndex);
+    label.append(badge, document.createTextNode(sigil.alias));
+    const uses = r.sigilUses?.[sigil.id] ?? 0;
+    if (uses > 0) {
+      const tally = document.createElement("span");
+      tally.className = "sigil-uses";
+      tally.textContent = `used ${uses}×`;
+      label.append(" ", tally);
+    }
     const preview = document.createElement("span");
     preview.className = "sigil-preview";
     for (const token of sigil.tokens) preview.append(tokenChip(token, r));
@@ -875,17 +1027,20 @@ function renderLexicon(r) {
 // ---- private guess ----------------------------------------------
 
 function renderAnswer(r) {
-  if (state.myGuess.length !== r.wordLength) state.myGuess = Array(r.wordLength).fill(null);
+  if (state.myGuess.length !== r.wordLength) state.myGuess = freshGuess(r);
   const bar = $("answer-bar");
   bar.replaceChildren();
   const committed = r.commitments?.[state.role] != null;
   const nextEmpty = state.myGuess.indexOf(null);
   state.myGuess.forEach((letter, index) => {
     const slot = document.createElement("span");
+    const locked = guessPositionLocked(index);
     const isCurrent = !committed && index === nextEmpty;
-    slot.className = `answer-slot${letter ? " filled" : ""}${isCurrent ? " current" : ""}`;
+    slot.className = `answer-slot${letter ? " filled" : ""}${locked ? " locked" : ""}${isCurrent ? " current" : ""}`;
     slot.textContent = letter ?? "";
-    slot.setAttribute("aria-label", `Guess position ${index + 1}${letter ? `, ${letter}` : ", empty"}`);
+    slot.setAttribute("aria-label", locked
+      ? `Position ${index + 1}, your letter ${letter}, already known`
+      : `Guess position ${index + 1}${letter ? `, ${letter}` : ", empty"}`);
     bar.append(slot);
   });
 
@@ -916,6 +1071,7 @@ function renderAnswer(r) {
   else if (iCommitted && partnerCommitted) status = "Comparing…";
   else if (r.lastOutcome?.tutorial) status = COMMITMENT_MESSAGES[r.lastOutcome.status];
   $("answer-status").textContent = status;
+  schedulePresence();
 }
 
 function fillLetter(letter) {
@@ -943,8 +1099,10 @@ document.addEventListener("keydown", (event) => {
 function backspaceGuess() {
   const r = rev();
   if (r.commitments?.[state.role] != null) return;
-  const index = state.myGuess.findLastIndex(Boolean);
-  if (index >= 0) state.myGuess[index] = null;
+  // Only clear a letter the player typed themselves; their own half stays locked.
+  for (let index = state.myGuess.length - 1; index >= 0; index -= 1) {
+    if (state.myGuess[index] && !guessPositionLocked(index)) { state.myGuess[index] = null; break; }
+  }
   renderAnswer(r);
 }
 
@@ -954,7 +1112,7 @@ $("answer-backspace").addEventListener("click", backspaceGuess);
 $("answer-clear").addEventListener("click", () => {
   const r = rev();
   if (r.commitments?.[state.role] != null) return;
-  state.myGuess = Array(r.wordLength).fill(null);
+  state.myGuess = freshGuess(r);
   renderAnswer(r);
 });
 
@@ -977,20 +1135,96 @@ $("answer-retract").addEventListener("click", () => act("guess:retractCommit", {
 
 function starString(count) { return "★★★".slice(0, count) + "☆☆☆".slice(0, 3 - count); }
 
+// A short plain-language reason for the star count, from the scoring breakdown.
+function starReason(stars, outcome) {
+  const b = outcome.breakdown ?? {};
+  if (stars === 3) {
+    return b.leanedOnLanguage
+      ? "first-try match, and you leaned on your own language."
+      : "first-try match with no shared words yet — clean.";
+  }
+  if (stars === 2) {
+    if (outcome.attempt > 1) return "you got there in two — the first guesses didn't line up.";
+    if (b.noLanguageYet) return "first-try match, but it took a lot of icons.";
+    return "first-try match — save and reuse a sigil for the third star.";
+  }
+  return "solved — it took a few tries.";
+}
+
+// A ratio of "used / par", or just the used count when the par is unknown.
+function vsPar(used, par) {
+  return Number.isFinite(par) ? `${used} / ${par}` : String(used);
+}
+
+// Fills the reveal scorecard <dl> so a star result is legible: what the pair
+// spent against par, and which attempt solved it. Pars/totals come straight
+// from the reducer's ledger via lastOutcome (WP-0).
+function fillScorecard(outcome) {
+  const dl = $("reveal-scorecard");
+  dl.replaceChildren();
+  const haveNumbers = Number.isFinite(outcome.tokens) && Number.isFinite(outcome.messages);
+  if (!haveNumbers) { dl.hidden = true; return; }
+  const rows = [
+    ["Tokens sent", vsPar(outcome.tokens, outcome.parTokens)],
+    ["Cards sent", vsPar(outcome.messages, outcome.parMessages)],
+    ["Solved on", `attempt ${outcome.attempt}`],
+  ];
+  const reuses = outcome.breakdown?.sigilReuses ?? 0;
+  if (reuses > 0) rows.push(["Sigils reused", `${reuses}×`]);
+  for (const [term, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    dl.append(dt, dd);
+  }
+  dl.hidden = false;
+}
+
+// On a solve, both players hold the full word: state.myGuess is the exact
+// string they just committed. Render it as the two colour-coded halves joining.
+function renderRevealWord(r) {
+  const host = $("reveal-word");
+  host.replaceChildren();
+  const word = state.myGuess;
+  const usable = Array.isArray(word) && word.length === r.wordLength && word.every(Boolean);
+  if (!usable) {
+    host.classList.remove("reveal-word-joined");
+    host.textContent = `Puzzle ${r.puzzleIndex + 1} down`;
+    return;
+  }
+  host.classList.add("reveal-word-joined");
+  word.forEach((letter, index) => {
+    const span = document.createElement("span");
+    span.className = `reveal-half ${guessPositionLocked(index) ? "reveal-half-mine" : "reveal-half-partner"}`;
+    span.style.setProperty("--i", String(index));
+    span.textContent = letter;
+    host.append(span);
+  });
+  host.setAttribute("aria-label", `The word was ${word.join("")}`);
+}
+
 function renderReveal(r) {
   const outcome = r.lastOutcome ?? {};
   const solved = outcome.status === COMMITMENT_STATUS.SOLVED;
   $("reveal-stars").textContent = solved ? starString(r.stars[r.puzzleIndex] ?? 1) : "";
   if (solved) {
-    $("reveal-kicker").textContent = "Solved";
-    $("reveal-word").textContent = `Puzzle ${r.puzzleIndex + 1} down`;
     const stars = r.stars[r.puzzleIndex] ?? 1;
-    $("reveal-detail").textContent = `${stars} star${stars === 1 ? "" : "s"} · ${outcome.attempt} attempt${outcome.attempt === 1 ? "" : "s"}.`;
+    $("reveal-kicker").textContent = "Solved";
+    renderRevealWord(r);
+    $("reveal-detail").textContent =
+      `Puzzle ${r.puzzleIndex + 1} down · ${stars} star${stars === 1 ? "" : "s"} — ${starReason(stars, outcome)}`;
+    fillScorecard(outcome);
     $("reveal-next").hidden = false;
     $("reveal-retry").hidden = true;
-    announce(`Solved. ${stars} stars.`);
+    const scoreSpoken = Number.isFinite(outcome.tokens)
+      ? ` ${outcome.tokens} tokens${Number.isFinite(outcome.parTokens) ? ` against a par of ${outcome.parTokens}` : ""}, ${outcome.messages} cards.`
+      : "";
+    announce(`Solved. ${stars} stars.${scoreSpoken}`);
   } else {
+    $("reveal-scorecard").hidden = true;
     $("reveal-kicker").textContent = outcome.status === COMMITMENT_STATUS.AGREED_WRONG ? "Agreed — but not the answer" : "Not aligned yet";
+    $("reveal-word").classList.remove("reveal-word-joined");
     $("reveal-word").textContent = "";
     $("reveal-detail").textContent = COMMITMENT_MESSAGES[outcome.status] ?? "Try again.";
     $("reveal-next").hidden = true;
@@ -1004,15 +1238,70 @@ $("reveal-next").addEventListener("click", () => {
   act("level:advance", { fromPhase: "reveal", fromIndex: r.puzzleIndex });
 });
 $("reveal-retry").addEventListener("click", () => {
-  state.myGuess = Array(rev().wordLength).fill(null);
+  state.myGuess = freshGuess(rev());
   act("level:retry", {});
 });
 
 function renderComplete(r) {
   const total = Object.values(r.stars).reduce((a, b) => a + b, 0);
-  $("complete-stars").textContent = "★".repeat(Math.min(total, 21));
-  $("complete-score").textContent = `${total} / 21 stars`;
-  announce(`All puzzles complete. ${total} of 21 stars.`);
+  const max = puzzleTotal(r) * 3;
+  $("complete-stars").textContent = "★".repeat(Math.min(total, max));
+  $("complete-score").textContent = `${total} / ${max} stars`;
+  const kicker = $("screen-complete").querySelector(".reveal-kicker");
+  if (kicker) kicker.textContent = `All ${puzzleTotal(r)} solved`;
+  renderLexiconRecap(r);
+  announce(`All puzzles complete. ${total} of ${max} stars.`);
+}
+
+// The end-screen celebration of the shared language: what the pair coined and
+// how much they leaned on it. Makes "keep our language" a real choice.
+function renderLexiconRecap(r) {
+  const box = $("lexicon-recap");
+  if (!box) return;
+  box.replaceChildren();
+  const sigils = r.sigils?.confirmed ?? [];
+  if (!sigils.length) {
+    box.hidden = true;
+    return;
+  }
+  const uses = r.sigilUses ?? {};
+  const totalReuse = sigils.reduce((sum, s) => sum + (uses[s.id] ?? 0), 0);
+  const top = sigils.reduce((best, s) => ((uses[s.id] ?? 0) > (uses[best?.id] ?? -1) ? s : best), null);
+
+  const head = document.createElement("h3");
+  head.textContent = `Your language — ${sigils.length} sigil${sigils.length === 1 ? "" : "s"}, used ${totalReuse}×`;
+  box.append(head);
+
+  const list = document.createElement("ul");
+  list.className = "lexicon-recap-list";
+  for (const sigil of sigils) {
+    const ident = identityFor(sigil.tokens);
+    const li = document.createElement("li");
+    li.style.setProperty("--sigil-hue", String(ident.hue));
+    const badge = document.createElement("span");
+    badge.className = "sigil-badge";
+    badge.innerHTML = renderSigilGlyph(ident.glyphIndex);
+    const name = document.createElement("span");
+    name.className = "sigil-alias";
+    name.textContent = sigil.alias;
+    const meaning = document.createElement("span");
+    meaning.className = "lexicon-recap-meaning";
+    meaning.textContent = sigil.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ");
+    const count = document.createElement("span");
+    count.className = "sigil-uses";
+    count.textContent = `${uses[sigil.id] ?? 0}×`;
+    li.append(badge, name, meaning, count);
+    list.append(li);
+  }
+  box.append(list);
+
+  if (top && (uses[top.id] ?? 0) > 0) {
+    const fav = document.createElement("p");
+    fav.className = "lexicon-recap-fav";
+    fav.textContent = `Most used: ${top.alias} (${uses[top.id]}×) — ${top.tokens.map((t) => ICONS[t.id]?.label ?? t.id).join(" · ")}`;
+    box.append(fav);
+  }
+  box.hidden = false;
 }
 
 $("rematch-keep").addEventListener("click", () => act("session:rematch", { keepLexicon: true }));

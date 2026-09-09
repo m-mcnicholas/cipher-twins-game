@@ -12,6 +12,7 @@
     "dev:lan": "node scripts/preview-lan.mjs --dev",
     "generate:word-banks": "node scripts/build-word-banks.mjs",
     "generate:cipher-bank": "node scripts/build-cipher-bank.mjs",
+    "analyze:ambiguity": "node scripts/analyze-ambiguity.mjs",
     "test:logic": "node --test tests/*.test.js"
   },
   "dependencies": {

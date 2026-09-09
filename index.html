@@ -35,6 +35,11 @@
         <article class="lobby-card">
           <h2>Host a room</h2>
           <p>Create a room and share the code with your partner.</p>
+          <fieldset class="game-length" id="game-length">
+            <legend>Game length</legend>
+            <label><input type="radio" name="game-length" value="7" checked> Full campaign — 7 puzzles</label>
+            <label><input type="radio" name="game-length" value="3"> Quick game — 3 puzzles</label>
+          </fieldset>
           <button type="button" id="host-room-btn" class="primary-button">Create room</button>
           <div class="room-code-display" id="host-code-display" hidden>
             <p class="room-code-label">Room code</p>
@@ -93,6 +98,7 @@
 
       <div class="tutorial-banner" id="tutorial-banner" hidden>
         <p id="tutorial-text"></p>
+        <ul class="tutorial-checklist" id="tutorial-checklist" aria-label="Steps to finish this tutorial"></ul>
         <div class="tutorial-actions">
           <button type="button" id="tutorial-next" class="primary-button">I've got it — continue</button>
           <button type="button" id="tutorial-skip" class="quiet-button">Skip tutorials (both must agree)</button>
@@ -107,6 +113,7 @@
           <span class="fact-chip" id="fact-parity"></span>
         </div>
         <div class="word-track" id="word-track" aria-label="Word layout"></div>
+        <p class="partner-presence" id="partner-presence" aria-live="polite" hidden></p>
       </section>
 
       <div class="game-columns">
@@ -168,6 +175,7 @@
         <div class="reveal-stars" id="reveal-stars" aria-hidden="true"></div>
         <h2 class="reveal-word" id="reveal-word"></h2>
         <p class="reveal-detail" id="reveal-detail"></p>
+        <dl class="reveal-scorecard" id="reveal-scorecard" hidden></dl>
         <div class="reveal-actions">
           <button type="button" id="reveal-next" class="primary-button" hidden>Next puzzle</button>
           <button type="button" id="reveal-retry" class="quiet-button" hidden>Try again</button>
@@ -182,6 +190,7 @@
         <div class="reveal-stars" id="complete-stars" aria-hidden="true"></div>
         <h2 class="reveal-word" id="complete-score"></h2>
         <p class="reveal-detail">Seven hidden words, no shared vocabulary going in — you built one together, icon by icon.</p>
+        <section class="lexicon-recap" id="lexicon-recap" aria-label="The language you built" hidden></section>
         <div class="reveal-actions">
           <button type="button" id="rematch-keep" class="primary-button">Play again — keep our language</button>
           <button type="button" id="rematch-fresh" class="quiet-button">Play again — fresh start</button>

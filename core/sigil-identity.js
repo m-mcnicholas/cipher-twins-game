@@ -1,0 +1,39 @@
+// A saved sigil's *look* — a small abstract glyph and a hue — derived purely
+// from the icons it stands for. Both players compute the same identity from the
+// same token sequence with no extra network round-trip, and a sigil built from
+// the same icons always looks the same. This is deliberately not a typed name:
+// the pair still can't put words on the board, but "the teal fork" is far more
+// memorable than "Sigil 3".
+
+export const SIGIL_GLYPH_COUNT = 12;
+
+// Signature string for a token list: kind:id joined, order-significant. Matches
+// the shape revision.js uses so identities line up with sigil de-duplication.
+export function tokenSignature(tokens) {
+  return (Array.isArray(tokens) ? tokens : [])
+    .map((t) => `${t?.kind ?? "?"}:${t?.id ?? "?"}`)
+    .join("|");
+}
+
+// FNV-1a over the signature — a stable 32-bit hash, no crypto needed since this
+// is cosmetic, not concealment.
+function hash32(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+// { glyphIndex: 0..SIGIL_GLYPH_COUNT-1, hue: 0..359 } for a token list.
+// A second, salted hash picks the hue so glyph and colour vary independently.
+export function identityFor(tokens) {
+  const sig = tokenSignature(tokens);
+  const a = hash32(sig);
+  const b = hash32(`hue|${sig}`);
+  return {
+    glyphIndex: a % SIGIL_GLYPH_COUNT,
+    hue: b % 360,
+  };
+}
