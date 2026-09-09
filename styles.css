@@ -1,21 +1,22 @@
 :root {
-  --bg: #1a1730;
-  --bg-panel: #241f3d;
-  --bg-panel-raised: #2c2650;
-  --border: #423a6c;
-  --text: #ede9f7;
-  --text-dim: #b6aed8;
-  --a: #f2c14e;
-  --a-dim: #f2c14e33;
-  --b: #5fd0c0;
-  --b-dim: #5fd0c033;
-  --danger: #e8677a;
-  --success: #6fd08c;
-  --tut: #9b8cf2;
-  --tut-dim: #9b8cf233;
+  --bg: #f2e8d5;
+  --bg-panel: #e8dbbd;
+  --bg-panel-raised: #ddcda0;
+  --border: #a68a54;
+  --text: #2b2113;
+  --text-dim: #5c4a30;
+  --a: #8c2f2f;
+  --a-dim: #8c2f2f26;
+  --b: #1f5c52;
+  --b-dim: #1f5c5226;
+  --danger: #a83c1f;
+  --danger-ink: #f8ecd7;
+  --success: #2f6b3f;
+  --tut: #7a5518;
+  --tut-dim: #7a551826;
   --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -23,7 +24,10 @@
 html, body {
   margin: 0;
   min-height: 100%;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/></svg>");
+  background-repeat: repeat;
+  background-size: 200px 200px;
   color: var(--text);
   font-family: var(--sans);
   /* Repeated taps compose tokens; keep scrolling and pinch zoom available. */
@@ -95,8 +99,8 @@ main#app {
   padding: 10px 20px;
   border: 0;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--a), #d99f2b);
-  color: #23180a;
+  background: linear-gradient(135deg, var(--a), #6f2222);
+  color: #f8ecd7;
   font-weight: 700;
   font-size: 0.95rem;
   cursor: pointer;
@@ -478,7 +482,7 @@ main#app {
   padding: 10px 18px;
   border-radius: 999px;
   background: var(--danger);
-  color: #2a0d12;
+  color: var(--danger-ink);
   font-weight: 700;
   font-size: 0.85rem;
 }
@@ -547,7 +551,7 @@ main#app {
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 14px rgba(43, 33, 19, 0.25);
 }
 .new-message-pill:hover { border-color: var(--text-dim); }
 .composer-section { flex: 1 1 45%; min-width: 0; }
@@ -576,8 +580,8 @@ main#app {
   background-image:
     linear-gradient(var(--bg-panel) 30%, transparent),
     linear-gradient(transparent, var(--bg-panel) 70%),
-    linear-gradient(rgba(0, 0, 0, 0.45), transparent),
-    linear-gradient(transparent, rgba(0, 0, 0, 0.45));
+    linear-gradient(rgba(43, 33, 19, 0.2), transparent),
+    linear-gradient(transparent, rgba(43, 33, 19, 0.2));
 }
 
 .conversation-list {
@@ -640,9 +644,9 @@ main#app {
 .token-chip svg { width: 20px; height: 20px; }
 .token-sigil { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; color: var(--a); border-color: var(--a); background: var(--a-dim); }
 .token-sigil[style*="--sigil-hue"] {
-  color: hsl(var(--sigil-hue) 60% 62%);
-  border-color: hsl(var(--sigil-hue) 55% 55%);
-  background: hsl(var(--sigil-hue) 55% 55% / 0.14);
+  color: hsl(var(--sigil-hue) 65% 30%);
+  border-color: hsl(var(--sigil-hue) 55% 38%);
+  background: hsl(var(--sigil-hue) 55% 45% / 0.16);
 }
 .sigil-badge {
   display: inline-grid;
@@ -650,7 +654,7 @@ main#app {
   width: 18px;
   height: 18px;
   margin-right: 4px;
-  color: hsl(var(--sigil-hue, 200) 60% 60%);
+  color: hsl(var(--sigil-hue, 200) 60% 32%);
 }
 .sigil-badge svg { width: 100%; height: 100%; }
 
@@ -730,7 +734,7 @@ main#app {
 #lexicon-confirmed h3, #lexicon-pending h3 { margin: 8px 0 6px; font-size: 0.82rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
 .sigil-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
 .sigil-alias { display: inline-flex; align-items: center; font-weight: 700; color: var(--a); font-size: 0.82rem; min-width: 54px; }
-.sigil-row .sigil-alias { color: hsl(var(--sigil-hue, 40) 55% 62%); }
+.sigil-row .sigil-alias { color: hsl(var(--sigil-hue, 40) 55% 32%); }
 .sigil-uses { font-weight: 400; font-size: 0.72rem; color: var(--text-dim); }
 
 .lexicon-recap { margin: 4px 0 20px; text-align: left; }
@@ -771,7 +775,7 @@ main#app {
   border-radius: 12px;
   border: 1px solid var(--danger);
   background: var(--bg-panel-raised);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 40px rgba(43, 33, 19, 0.35);
   z-index: 10;
 }
 .recovery-panel h2 { margin: 0 0 6px; font-family: var(--serif); font-size: 1.1rem; }
