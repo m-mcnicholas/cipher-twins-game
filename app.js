@@ -18,7 +18,7 @@ import {
   deriveSalt, commitmentFor, guessIsCorrect, normalizeGuess,
   COMMITMENT_STATUS, COMMITMENT_MESSAGES,
 } from "./core/commitments.js";
-import { ICONS, ICON_GROUPS, renderIcon, renderSigilGlyph } from "./icons.js";
+import { ICONS, ICON_GROUPS, renderIcon, renderSigilGlyph, renderEmblem, renderTwinsMark } from "./icons.js";
 import { identityFor } from "./core/sigil-identity.js";
 import { ACTIVE_WORDS, TIER_LENGTHS } from "./words/bank.js";
 
@@ -26,6 +26,16 @@ const $ = (id) => document.getElementById(id);
 const SCREENS = ["lobby", "connecting", "game", "reveal", "complete", "error"];
 const screens = Object.fromEntries(SCREENS.map((name) => [name, $(`screen-${name}`)]));
 const wordMeta = (wordId) => ACTIVE_WORDS.find((w) => w.id === wordId) || null;
+
+// The paired mark in the header — the same two-halves-of-a-ring motif as the
+// favicon and the per-player emblems.
+$("wordmark-mark").innerHTML = renderTwinsMark();
+
+// A "Player A/B" label with its emblem in front. Colour comes from CSS via the
+// data-role; the emblem and the word are the non-colour signal.
+function playerTag(role, { you = false } = {}) {
+  return `<span class="emblem" data-role="${role}">${renderEmblem(role)}</span>Player ${role}${you ? " (you)" : ""}`;
+}
 
 const state = {
   role: null,          // "A" | "B"
@@ -42,6 +52,7 @@ const state = {
   lastPhaseKey: null,
   knownPaletteIds: null,   // Set of icon ids seen last round, for "new icon" cues
   justUnlockedIds: [],
+  knownSigilIds: null,     // Set of confirmed sigil ids seen last render, for the "saved" acknowledgment
   tutorialDoneSeen: null,  // { key, set } — which checklist steps we've already announced
   puzzleCount: PUZZLE_COUNT, // host's chosen game length; 3 for a quick game
   recovering: null,
@@ -277,7 +288,8 @@ function buildClient(code, lastVersion = 0) {
 
 function onConnected({ role, code }) {
   state.role = role;
-  $("role-indicator").textContent = `You are Player ${role}`;
+  document.body.dataset.you = role;
+  $("role-indicator").innerHTML = `<span class="emblem" data-role="${role}">${renderEmblem(role)}</span>You are Player ${role}`;
   $("role-indicator").dataset.role = role;
   hideRecovery();
   const recovering = state.recovering;
@@ -448,6 +460,7 @@ const OBJECTIVE_LABELS = {
 function render() {
   const r = rev();
   if (!r) return;
+  if (state.role) document.body.dataset.you = state.role;
 
   if (r.phase === "complete") { renderComplete(r); showScreen("complete"); return; }
   if (r.phase === "reveal") { renderReveal(r); showScreen("reveal"); return; }
@@ -682,7 +695,7 @@ function renderConversation(r) {
     const badge = document.createElement("span");
     badge.className = "author-badge";
     badge.dataset.role = message.author;
-    badge.textContent = `Player ${message.author}`;
+    badge.innerHTML = playerTag(message.author);
     const seq = document.createElement("span");
     seq.className = "message-seq";
     seq.textContent = `#${message.seq + 1}`;
@@ -887,6 +900,7 @@ for (const [id, drawer] of DRAWERS) {
       $(otherId).textContent = otherDrawer === "palette-drawer" ? "Icons" : "Sigils";
     }
     el.hidden = !opening;
+    if (opening && drawer === "lexicon-drawer") $("composer-lexicon-toggle").classList.remove("has-news");
     $(id).setAttribute("aria-expanded", String(opening));
     $(id).textContent = `${opening ? "Hide " : ""}${drawer === "palette-drawer" ? "Icons" : "Sigils"}`;
     if (opening) requestAnimationFrame(() => el.querySelector("button, [tabindex]")?.focus());
@@ -940,15 +954,22 @@ function renderPaletteDrawer(r) {
 }
 
 function renderLexicon(r) {
+  // Which confirmed sigils are new since the last render — for the "saved to
+  // your dictionary" acknowledgment. First render celebrates nothing.
+  const confirmedIds = r.sigils.confirmed.map((s) => s.id);
+  const known = state.knownSigilIds;
+  const newlySaved = known ? confirmedIds.filter((id) => !known.has(id)) : [];
+  state.knownSigilIds = new Set(confirmedIds);
+
   const confirmed = $("lexicon-confirmed");
   confirmed.replaceChildren();
   const chead = document.createElement("h3");
-  chead.textContent = `Saved sigils (${r.sigils.confirmed.length})`;
+  chead.textContent = `Your dictionary (${r.sigils.confirmed.length})`;
   confirmed.append(chead);
   if (!r.sigils.confirmed.length) {
     const p = document.createElement("p");
     p.className = "lexicon-empty";
-    p.textContent = "None yet. Send a useful two-icon-or-more message, then choose “Save as sigil”.";
+    p.textContent = "No entries yet. Send a card of two or more icons, then choose “Save as sigil”.";
     confirmed.append(p);
   }
   for (const sigil of r.sigils.confirmed) {
@@ -956,6 +977,14 @@ function renderLexicon(r) {
     wrap.className = "sigil-row";
     const ident = identityFor(sigil.tokens);
     wrap.style.setProperty("--sigil-hue", String(ident.hue));
+    if (newlySaved.includes(sigil.id)) {
+      wrap.classList.add("sigil-just-saved");
+      const flag = document.createElement("span");
+      flag.className = "sigil-flag";
+      flag.textContent = "✦ New";
+      wrap.append(flag);
+      setTimeout(() => wrap.classList.remove("sigil-just-saved"), 2600);
+    }
     const label = document.createElement("span");
     label.className = "sigil-alias";
     const badge = document.createElement("span");
@@ -995,32 +1024,47 @@ function renderLexicon(r) {
   for (const sigil of r.sigils.pending) {
     const wrap = document.createElement("div");
     wrap.className = "sigil-row sigil-pending";
+    const proposer = document.createElement("span");
+    proposer.className = "emblem";
+    proposer.dataset.role = sigil.proposedBy;
+    proposer.innerHTML = renderEmblem(sigil.proposedBy);
     const label = document.createElement("span");
     label.className = "sigil-alias";
     label.textContent = sigil.alias;
     const preview = document.createElement("span");
     preview.className = "sigil-preview";
     for (const token of sigil.tokens) preview.append(tokenChip(token, r));
-    wrap.append(label, preview);
+    wrap.append(proposer, label, preview);
     if (sigil.proposedBy === state.role) {
       const note = document.createElement("span");
       note.className = "sigil-note";
-      note.textContent = "Waiting for your partner…";
+      note.textContent = "Waiting for your partner to approve…";
       const cancel = document.createElement("button");
       cancel.type = "button"; cancel.className = "micro-button micro-danger"; cancel.textContent = "Cancel";
       cancel.addEventListener("click", () => act("sigil:reject", { sigilId: sigil.id }));
       wrap.append(note, cancel);
     } else {
+      const note = document.createElement("span");
+      note.className = "sigil-note";
+      note.textContent = `Player ${sigil.proposedBy} wants to save this`;
       const yes = document.createElement("button");
       yes.type = "button"; yes.className = "micro-button"; yes.textContent = "Approve";
       yes.addEventListener("click", () => act("sigil:confirm", { sigilId: sigil.id }));
       const no = document.createElement("button");
       no.type = "button"; no.className = "micro-button micro-danger"; no.textContent = "Reject";
       no.addEventListener("click", () => act("sigil:reject", { sigilId: sigil.id }));
-      wrap.append(yes, no);
+      wrap.append(note, yes, no);
       announce(`Player ${sigil.proposedBy} wants to save ${sigil.alias}.`);
     }
     pending.append(wrap);
+  }
+
+  // Acknowledge a freshly approved dictionary entry: announce it, and if the
+  // drawer is closed, mark the toggle so the player notices.
+  if (newlySaved.length) {
+    const names = r.sigils.confirmed.filter((s) => newlySaved.includes(s.id)).map((s) => s.alias);
+    announce(`Saved to your dictionary: ${names.join(", ")}.`);
+    if ($("lexicon-drawer").hidden) $("composer-lexicon-toggle").classList.add("has-news");
   }
 }
 
@@ -1182,15 +1226,18 @@ function fillScorecard(outcome) {
 }
 
 // On a solve, both players hold the full word: state.myGuess is the exact
-// string they just committed. Render it as the two colour-coded halves joining.
+// string they just committed. Render it as the two colour-coded halves joining,
+// with a small emblem legend naming whose half is whose.
 function renderRevealWord(r) {
   const host = $("reveal-word");
   host.replaceChildren();
+  const legend = $("reveal-legend");
   const word = state.myGuess;
   const usable = Array.isArray(word) && word.length === r.wordLength && word.every(Boolean);
   if (!usable) {
     host.classList.remove("reveal-word-joined");
     host.textContent = `Puzzle ${r.puzzleIndex + 1} down`;
+    if (legend) legend.hidden = true;
     return;
   }
   host.classList.add("reveal-word-joined");
@@ -1202,6 +1249,14 @@ function renderRevealWord(r) {
     host.append(span);
   });
   host.setAttribute("aria-label", `The word was ${word.join("")}`);
+  if (legend) {
+    const you = state.role ?? "A";
+    const them = you === "A" ? "B" : "A";
+    legend.innerHTML =
+      `<span data-role="${you}">${playerTag(you, { you: true })}</span>`
+      + `<span data-role="${them}">${playerTag(them)}</span>`;
+    legend.hidden = false;
+  }
 }
 
 function renderReveal(r) {
@@ -1226,6 +1281,7 @@ function renderReveal(r) {
     $("reveal-kicker").textContent = outcome.status === COMMITMENT_STATUS.AGREED_WRONG ? "Agreed — but not the answer" : "Not aligned yet";
     $("reveal-word").classList.remove("reveal-word-joined");
     $("reveal-word").textContent = "";
+    $("reveal-legend").hidden = true;
     $("reveal-detail").textContent = COMMITMENT_MESSAGES[outcome.status] ?? "Try again.";
     $("reveal-next").hidden = true;
     $("reveal-retry").hidden = false;
@@ -1248,7 +1304,7 @@ function renderComplete(r) {
   $("complete-stars").textContent = "★".repeat(Math.min(total, max));
   $("complete-score").textContent = `${total} / ${max} stars`;
   const kicker = $("screen-complete").querySelector(".reveal-kicker");
-  if (kicker) kicker.textContent = `All ${puzzleTotal(r)} solved`;
+  if (kicker) kicker.textContent = `All ${puzzleTotal(r)} puzzles solved`;
   renderLexiconRecap(r);
   announce(`All puzzles complete. ${total} of ${max} stars.`);
 }
@@ -1261,16 +1317,20 @@ function renderLexiconRecap(r) {
   box.replaceChildren();
   const sigils = r.sigils?.confirmed ?? [];
   if (!sigils.length) {
-    box.hidden = true;
+    const empty = document.createElement("p");
+    empty.className = "lexicon-recap-empty";
+    empty.textContent = "You solved every word without saving a sigil — a clean, improvised run.";
+    box.append(empty);
     return;
   }
   const uses = r.sigilUses ?? {};
   const totalReuse = sigils.reduce((sum, s) => sum + (uses[s.id] ?? 0), 0);
   const top = sigils.reduce((best, s) => ((uses[s.id] ?? 0) > (uses[best?.id] ?? -1) ? s : best), null);
 
-  const head = document.createElement("h3");
-  head.textContent = `Your language — ${sigils.length} sigil${sigils.length === 1 ? "" : "s"}, used ${totalReuse}×`;
-  box.append(head);
+  const summary = document.createElement("p");
+  summary.className = "lexicon-recap-summary";
+  summary.textContent = `${sigils.length} sigil${sigils.length === 1 ? "" : "s"}, used ${totalReuse}× between you`;
+  box.append(summary);
 
   const list = document.createElement("ul");
   list.className = "lexicon-recap-list";

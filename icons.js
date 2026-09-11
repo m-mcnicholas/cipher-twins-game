@@ -106,3 +106,28 @@ export function renderSigilGlyph(index) {
 }
 
 export { SIGIL_GLYPHS };
+
+// Paired player emblems, built from one shape: a ring, with one half filled.
+// Player A fills the left half, Player B fills the right — two halves of the
+// same coin. `renderTwinsMark` shows the whole ring, split down the middle, for
+// the Cipher Twins wordmark and favicon. Non-alphabetic on purpose, and always
+// paired with a colour + a "Player A/B" label so colour is never the only cue.
+function emblemSvg(inner) {
+  return `<svg viewBox="0 0 24 24" width="100%" height="100%" role="img" aria-hidden="true">${inner}</svg>`;
+}
+const EMBLEM_RING = '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />';
+const EMBLEM_A = `${EMBLEM_RING}<path d="M12 3 A9 9 0 0 0 12 21 Z" fill="currentColor" />`;
+const EMBLEM_B = `${EMBLEM_RING}<path d="M12 3 A9 9 0 0 1 12 21 Z" fill="currentColor" />`;
+
+export function renderEmblem(role) {
+  return emblemSvg(role === "B" ? EMBLEM_B : EMBLEM_A);
+}
+
+// The whole ring, split by a seam, with the dot at the centre — the pair as one.
+export function renderTwinsMark() {
+  return emblemSvg(
+    EMBLEM_RING
+    + '<line x1="12" y1="3" x2="12" y2="21" stroke="currentColor" stroke-width="2" />'
+    + '<circle cx="12" cy="12" r="2.4" fill="currentColor" />',
+  );
+}
